@@ -1,0 +1,82 @@
+// Định dạng số kiểu Việt Nam: 1.234.567 ; 12,5%
+const nf0 = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 });
+const nf1 = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+const nf2 = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+
+export const isNum = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+
+export function vnd(x: unknown, digits = 0): string {
+  if (!isNum(x)) return "—";
+  return digits === 0 ? nf0.format(x) : new Intl.NumberFormat("vi-VN", { maximumFractionDigits: digits }).format(x);
+}
+
+export function money(x: unknown): string {
+  if (!isNum(x)) return "—";
+  const a = Math.abs(x);
+  if (a >= 1e12) return `${nf2.format(x / 1e12)} nghìn tỷ`;
+  if (a >= 1e9) return `${nf2.format(x / 1e9)} tỷ`;
+  if (a >= 1e6) return `${nf1.format(x / 1e6)} tr`;
+  return nf0.format(x);
+}
+
+export function pct(x: unknown, digits = 1, sign = false): string {
+  if (!isNum(x)) return "—";
+  const s = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(x * 100);
+  return `${sign && x > 0 ? "+" : ""}${s}%`;
+}
+
+export function num(x: unknown, digits = 2): string {
+  if (!isNum(x)) return "—";
+  return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: digits }).format(x);
+}
+
+export function bn(x: unknown): string {
+  // số tỷ đồng
+  if (!isNum(x)) return "—";
+  return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: Math.abs(x) >= 100 ? 0 : 1 }).format(x);
+}
+
+export const cls = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
+
+export const tone = (x: unknown) => (!isNum(x) || x === 0 ? "ref" : x > 0 ? "up" : "down");
+
+export function scoreColor(s: number): string {
+  if (s >= 72) return "var(--up)";
+  if (s >= 60) return "#84cc16";
+  if (s >= 45) return "var(--ref)";
+  if (s >= 35) return "#fb923c";
+  return "var(--down)";
+}
+
+export function recTone(code?: string): string {
+  if (!code) return "";
+  if (["buy", "strong_buy", "accumulate"].includes(code)) return "up";
+  if (["sell", "strong_sell", "reduce"].includes(code)) return "down";
+  return "ref";
+}
+
+const PALETTE = ["#0d9488", "#2563eb", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2", "#9333ea", "#ca8a04", "#dc2626"];
+export function tickerColor(t: string): string {
+  let h = 0;
+  for (const c of t) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
+
+export const SOURCE_LABEL: Record<string, string> = {
+  demo: "DEMO",
+  imported: "File nhập",
+  vndirect: "VNDirect",
+  ssi: "SSI iBoard",
+  tcbs: "TCBS",
+  vps: "VPS",
+  vietstock: "Vietstock",
+  cafef: "CafeF",
+  manual: "Nhập tay",
+};
+export function sourceLabel(s?: string): string {
+  if (!s) return "—";
+  return s
+    .split("+")
+    .map((p) => SOURCE_LABEL[p] ?? p)
+    .join(" + ");
+}

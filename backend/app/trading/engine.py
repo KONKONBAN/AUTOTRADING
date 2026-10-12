@@ -26,7 +26,7 @@ from ..data import providers, universe
 from ..db import get_db
 from ..utils import vn_num, vn_pct
 from . import vn_rules
-from .broker import OrderError, get_broker, normalize_ticker
+from .broker import OrderError, get_broker, normalize_ticker, quote
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +88,14 @@ def _universe(cfg: AutoTraderConfig) -> set[str]:
     return {t for t in tickers if universe.info(t)["sector"] not in cfg.sectors_excluded}
 
 
+def _last_price(ticker: str) -> float:
+    """Giá hiện tại để định giá đề xuất MUA giá thị trường (không có giá) khi giữ chỗ ngân sách."""
+    try:
+        return float(providers.latest_price(ticker))
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def plan_cycle(cfg: AutoTraderConfig | None = None) -> dict:
     """Lập kế hoạch lệnh cho chu kỳ hiện tại (chưa thực thi)."""
     cfg = cfg or load_config()
@@ -103,7 +111,7 @@ def plan_cycle(cfg: AutoTraderConfig | None = None) -> dict:
     # Đề xuất cũ của chính Auto-Trader sẽ bị thay thế ở chu kỳ này nên không tính.
     pending_other = [p for p in list_proposals("pending") if p["source"] != "autotrader" and p["side"] == "BUY"]
     pending_tickers = {p["ticker"] for p in pending_other}
-    pending_value = sum(p["quantity"] * (p["price"] or 0) for p in pending_other)
+    pending_value = sum(p["quantity"] * (p["price"] or _last_price(p["ticker"])) for p in pending_other)
     cash_left = max(cash - pending_value, 0.0)
     # Ngân sách giải ngân dùng CHUNG cho cả mua gia tăng lẫn mua mới, không vượt tỷ trọng mục tiêu
     budget = max(0.0, equity * exposure_target - acc["market_value"] - pending_value)
@@ -236,7 +244,23 @@ def list_proposals(status: str | None = "pending") -> list[dict]:
     return get_db().query("SELECT * FROM proposals ORDER BY id DESC LIMIT 200")
 
 
-BUY_SLIPPAGE = 0.02  # duyệt đề xuất MUA: chấp nhận giá hiện tại cao hơn giá đề xuất tối đa 2%
+SLIPPAGE = 0.02  # khi duyệt: chấp nhận giá hiện tại xấu hơn giá đề xuất tối đa 2%
+
+
+def _approval_limit(p: dict) -> float | None:
+    """Giá giới hạn khi thực thi đề xuất đã duyệt.
+
+    - BÁN của Auto-Trader (cắt lỗ / trailing / thoát vị thế): lệnh thị trường - phải thực hiện được.
+    - MUA: giá đề xuất + 2% (không mua đuổi), không vượt giá trần của phiên.
+    - BÁN có giá (VD: AI Agent đề xuất chốt lời 139.000): giá đề xuất − 2%, không thấp hơn giá sàn;
+      thị trường thấp hơn mức này thì lệnh không khớp thay vì bán rẻ hơn giá người dùng đã duyệt.
+    """
+    if not p["price"] or (p["side"] == "SELL" and p["source"] == "autotrader"):
+        return None
+    lim = quote(p["ticker"])["limits"]
+    if p["side"] == "BUY":
+        return min(p["price"] * (1 + SLIPPAGE), lim.ceiling)
+    return max(p["price"] * (1 - SLIPPAGE), lim.floor)
 
 
 def decide_proposal(pid: int, approve: bool) -> dict:
@@ -249,10 +273,8 @@ def decide_proposal(pid: int, approve: bool) -> dict:
     if not approve:
         return {"id": pid, "status": "rejected"}
     p = db.query_one("SELECT * FROM proposals WHERE id=?", (pid,))
-    # BÁN: lệnh thị trường (cắt lỗ phải thực hiện được kể cả khi giá đã giảm thêm)
-    # MUA: giới hạn giá đề xuất + 2% để không mua đuổi khi giá đã chạy xa
-    limit = None if p["side"] == "SELL" or not p["price"] else p["price"] * (1 + BUY_SLIPPAGE)
     try:
+        limit = _approval_limit(p)
         res = get_broker().place_order(p["ticker"], p["side"], p["quantity"], limit,
                                        source=p["source"], reason=p["reason"] or "", stop_loss=p["stop_loss"],
                                        take_profit=p["take_profit"])

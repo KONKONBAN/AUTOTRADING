@@ -39,9 +39,12 @@ export default function Agent() {
   const logRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const sentQ = useRef(false);
-  // Chống race: câu trả lời đến sau khi người dùng đã chuyển sang cuộc trò chuyện khác sẽ bị bỏ qua
+  // Chống race: mỗi lúc chỉ MỘT câu hỏi được xử lý (ô soạn bị khóa đến khi có trả lời, kể cả khi người dùng
+  // chuyển cuộc trò chuyện). Câu trả lời chỉ được nối vào màn hình đang xem nếu đúng cuộc trò chuyện đó.
   const activeRef = useRef<string | null>(null);
-  const reqSeq = useRef(0);
+  const navSeq = useRef(0);
+  const pending = useRef<{ sid: string | null } | null>(null);
+  const [typingHere, setTypingHere] = useState(false);
 
   const loadSessions = () => api.get("/api/agent/sessions").then(setSessions).catch(() => {});
   useEffect(() => { loadSessions(); }, []);
@@ -57,17 +60,18 @@ export default function Agent() {
   }, []);
 
   const open = async (id: string) => {
-    reqSeq.current++;
+    if (id === activeRef.current) return;  // đang xem đúng cuộc trò chuyện này
+    navSeq.current++;
     activeRef.current = id;
-    setBusy(false);
     setSid(id);
+    setTypingHere(pending.current?.sid === id);
     const r = await api.get(`/api/agent/sessions/${id}`);
     if (activeRef.current === id) setMsgs(r.messages);
   };
   const newChat = () => {
-    reqSeq.current++;
+    navSeq.current++;
     activeRef.current = null;
-    setBusy(false);
+    setTypingHere(false);
     setSid(null); setMsgs([]); setInput(""); setFiles([]);
   };
   const remove = async (id: string) => {
@@ -87,20 +91,26 @@ export default function Agent() {
     if (sid) form.append("session_id", sid);
     files.forEach((f) => form.append("files", f));
     setFiles([]);
-    const tok = ++reqSeq.current;
-    const current = () => reqSeq.current === tok;  // người dùng chưa chuyển cuộc trò chuyện
+    setTypingHere(true);
+    const nav = navSeq.current;
+    pending.current = { sid };
     try {
       const r = await api.form("/api/agent/chat", form);
-      if (current()) {
+      if (navSeq.current === nav) {  // người dùng vẫn ở cuộc trò chuyện này
         setSid(r.session_id);
         activeRef.current = r.session_id;
         setMsgs((m) => [...m, { role: "assistant", text: r.reply, tools: r.tools, proposals: r.proposals }]);
+      } else if (activeRef.current === r.session_id) {  // đã rời đi rồi quay lại: tải lại bản ghi đầy đủ
+        const s = await api.get(`/api/agent/sessions/${r.session_id}`);
+        if (activeRef.current === r.session_id) setMsgs(s.messages);
       }
       loadSessions();
     } catch (e: any) {
-      if (current()) setMsgs((m) => [...m, { role: "assistant", text: `❌ ${e.message}` }]);
+      if (navSeq.current === nav) setMsgs((m) => [...m, { role: "assistant", text: `❌ ${e.message}` }]);
     } finally {
-      if (current()) setBusy(false);
+      pending.current = null;
+      setBusy(false);
+      setTypingHere(false);
     }
   }
 
@@ -184,7 +194,7 @@ export default function Agent() {
                 </div>
               </div>
             ))}
-            {busy && (
+            {busy && typingHere && (
               <div className="msg">
                 <div className="avatar ai"><Bot size={17} /></div>
                 <div className="bubble"><span className="typing"><span /><span /><span /></span> <span className="small subtle">Đang phân tích dữ liệu…</span></div>
@@ -205,7 +215,9 @@ export default function Agent() {
               </button>
               <input ref={fileRef} type="file" hidden multiple accept="image/png,image/jpeg,image/webp,application/pdf"
                 onChange={(e) => { setFiles([...files, ...Array.from(e.target.files ?? [])]); e.target.value = ""; }} />
-              <textarea className="input grow" rows={1} placeholder="Hỏi về cổ phiếu, danh mục, tài chính cá nhân… (Enter để gửi, Shift+Enter xuống dòng)"
+              <textarea className="input grow" rows={1}
+                placeholder={busy && !typingHere ? "AI đang trả lời ở một cuộc trò chuyện khác - vui lòng chờ…"
+                  : "Hỏi về cổ phiếu, danh mục, tài chính cá nhân… (Enter để gửi, Shift+Enter xuống dòng)"}
                 value={input} onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
               <button className="btn primary icon" onClick={() => send()} disabled={busy || !input.trim()}><Send size={17} /></button>

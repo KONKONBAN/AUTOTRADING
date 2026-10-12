@@ -39,6 +39,9 @@ def norm(text) -> str:
 
 _VN_NUM = re.compile(r"^[-(]?\d{1,3}(\.\d{3})+(,\d+)?\)?$|^[-(]?\d+,\d{1,2}\)?$")
 _EN_NUM = re.compile(r"^[-(]?\d{1,3}(,\d{3})+(\.\d+)?\)?$|^[-(]?\d+\.\d{1,2}\)?$")
+# Nhóm hàng nghìn hợp lệ: 1-3 chữ số đầu (không bắt đầu bằng 0) rồi các nhóm 3 chữ số
+_GROUP_DOT = re.compile(r"^[1-9]\d{0,2}(\.\d{3})+$")
+_GROUP_COMMA = re.compile(r"^[1-9]\d{0,2}(,\d{3})+$")
 
 
 def detect_convention(grid: list[list], delimiter: str | None = None) -> str | None:
@@ -76,18 +79,18 @@ def _num(v, conv: str | None = None) -> float | None:
         return None
     neg = s.startswith("(") and s.endswith(")") or s.startswith("-")
     s = s.strip("()").lstrip("-")
-    if conv == "vn":
-        s = s.replace(".", "").replace(",", ".")
-    elif conv == "en":
-        s = s.replace(",", "")
-    elif "," in s and "." in s:
+    if "," in s and "." in s:
+        # dấu xuất hiện sau cùng là dấu thập phân: 1.234,5 (VN) | 1,234.5 (EN)
         s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
-    elif s.count(",") > 1 or (s.count(",") == 1 and len(s.split(",")[1]) == 3):
-        s = s.replace(",", "")
-    elif s.count(".") > 1 or (s.count(".") == 1 and len(s.split(".")[1]) == 3):
-        s = s.replace(".", "")  # kiểu Việt Nam: 12.345 = mười hai nghìn
-    else:
-        s = s.replace(",", ".")
+    elif "," in s:
+        if s.count(",") > 1 or (conv != "vn" and _GROUP_COMMA.match(s)):
+            s = s.replace(",", "")      # 1,234,567 | 1,234 (EN / không rõ)
+        else:
+            s = s.replace(",", ".")     # 1,5 | 0,125 | 1,234 (VN = một phẩy hai ba bốn)
+    elif "." in s:
+        if s.count(".") > 1 or (conv != "en" and _GROUP_DOT.match(s)):
+            s = s.replace(".", "")      # 1.234.567 | 12.345 (VN / không rõ: mười hai nghìn)
+        # còn lại là số thập phân: 1.5 | 0.125 | 44010.123 (phần nguyên ≥ 4 chữ số không thể là nhóm nghìn)
     try:
         x = float(s)
     except ValueError:
@@ -143,8 +146,9 @@ UNIT_PATTERNS = [("ty dong", 1.0), ("ty vnd", 1.0), ("billion", 1.0), ("trieu do
                  ("vnd", 1e-9), ("dong", 1e-9)]
 
 
-_QUARTER = re.compile(r"(\bq|quy|quý)\s*[1-4]\b|\b[1-4]\s*q\b|\bh[12]\b|\b[69]\s*(t|th|thang|tháng|m)\b|\b[69]m\b",
-                      re.I)
+# Cột quý / bán niên / lũy kế 6-9 tháng: Q1/2024, 2024Q1, 4Q2024, Quý 4/2024, H1, 2024H1, 6T, 9 tháng, 6M
+_QUARTER = re.compile(r"(?<![a-zà-ỹ])(q|quy|quý)\s*[1-4](?!\d)|(?<!\d)[1-4]\s*q(?![a-zà-ỹ])"
+                      r"|(?<![a-zà-ỹ])h[12](?!\d)|(?<!\d)[69]\s*(tháng|thang|th|t|m)(?![a-zà-ỹ])", re.I)
 
 
 def _year_of(v) -> int | None:
@@ -155,7 +159,7 @@ def _year_of(v) -> int | None:
     s = str(v or "")
     if _QUARTER.search(s):
         return None  # cột quý / 6 tháng / 9 tháng không phải số liệu cả năm
-    if re.search(r"(19|20)\d{2}\s*[FE]\b", s) or re.search(r"du phong|ke hoach|forecast|\bKH\b", norm(s) + " " + s):
+    if re.search(r"(19|20)\d{2}\s*[FE]\b", s, re.I) or re.search(r"du phong|ke hoach|forecast|\bKH\b", norm(s) + " " + s):
         return None  # cột dự phóng / kế hoạch
     m = re.search(r"(19|20)\d{2}", s)
     if m and len(s) <= 30:
@@ -208,11 +212,16 @@ def _grids(data: bytes, filename: str) -> list[tuple[str, list[list], str | None
     except (zipfile.BadZipFile, KeyError, InvalidFileException, OSError) as exc:
         raise FileFormatError("Không đọc được file Excel - hãy lưu lại dạng .xlsx hoặc CSV UTF-8.") from exc
     out = []
-    for ws in wb.worksheets:
-        rows = [list(r) for r in ws.iter_rows(values_only=True)]
-        rows = [r for r in rows if any(c not in (None, "") for c in r)]
-        if rows:
-            out.append((ws.title, rows, detect_convention(rows)))
+    try:  # read_only: lỗi XML của sheet hỏng chỉ xuất hiện khi duyệt dòng
+        for ws in wb.worksheets:
+            rows = [list(r) for r in ws.iter_rows(values_only=True)]
+            rows = [r for r in rows if any(c not in (None, "") for c in r)]
+            if rows:
+                out.append((ws.title, rows, detect_convention(rows)))
+    except Exception as exc:  # noqa: BLE001 - file hỏng/thiếu dữ liệu → báo lỗi rõ ràng thay vì 500
+        raise FileFormatError("File Excel bị hỏng hoặc không đầy đủ - hãy mở bằng Excel và lưu lại dạng .xlsx.") from exc
+    finally:
+        wb.close()
     return out
 
 
@@ -256,10 +265,17 @@ def _row_years(row: list) -> dict[int, int]:
                 cols[j] = int(c)
         elif (y := _year_of(c)) is not None:
             cols[j] = y
-    ys = [cols[j] for j in sorted(cols)]
-    if len(ys) >= 2 and any(abs(b - a) > 3 for a, b in zip(ys, ys[1:])):
-        return {}
-    return cols
+    # Giữ dãy năm liền nhau dài nhất (bỏ ô tóm tắt kiểu "CAGR 2020-2024"); các năm rời rạc → không phải tiêu đề
+    runs: list[list[tuple[int, int]]] = []
+    for j in sorted(cols):
+        if runs and abs(cols[j] - runs[-1][-1][1]) <= 3:
+            runs[-1].append((j, cols[j]))
+        else:
+            runs.append([(j, cols[j])])
+    if len(runs) <= 1:
+        return cols
+    best = max(runs, key=len)
+    return dict(best) if len(best) >= 2 else {}
 
 
 def _parse_grid(grid: list[list], conv: str | None = None) -> dict | None:
@@ -365,6 +381,7 @@ def _parse_grid(grid: list[list], conv: str | None = None) -> dict | None:
             years.append(row)
     missing = [f for f, _, _ in fundamentals.MANUAL_FIELDS if not any(f in y for y in years)]
     return {"years": years, "unit_detected": unit_name, "unit_guessed": unit_guessed,
+            "shares_from_capital": "_owner_capital" in mapped,  # số CP suy từ vốn góp → phụ thuộc đơn vị
             "mapping": report, "missing_fields": missing}
 
 
@@ -455,7 +472,10 @@ def financial_template(ticker: str | None = None) -> bytes:
         ws.cell(i, 2, key).font = Font(color="94A3B8")
         ws.cell(i, 3, unit).font = Font(color="64748B")
         for j, y in enumerate(years, start=4):
-            v = by_year.get(y, {}).get(key)
+            row = by_year.get(y, {})
+            # trường được ƯỚC TÍNH hoặc bỏ trống (tính là 0) giữ nguyên ô trống - không biến thành số liệu thật
+            skip = set(row.get("estimated_fields") or []) | set(row.get("defaulted_fields") or [])
+            v = None if key in skip else row.get(key)
             c = ws.cell(i, j, round(v, 2) if isinstance(v, (int, float)) else None)
             c.number_format = "#,##0.00"
             c.border = Border(top=thin, bottom=thin, left=thin, right=thin)

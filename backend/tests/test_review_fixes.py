@@ -160,3 +160,154 @@ def test_dangling_tool_use_is_closed():
 def test_system_prompt_is_stable():
     assert agent_mod._system() == agent_mod._system()
     assert "Ngày hiện tại" not in agent_mod._system()[0]["text"]
+
+
+# ------------------------------------------------------------------ vòng kiểm chứng thứ hai
+def test_decimal_numbers_not_read_as_thousands():
+    assert excel_import._num("44010.123") == pytest.approx(44010.123)
+    assert excel_import._num("0.125") == pytest.approx(0.125)
+    assert excel_import._num("0,125") == pytest.approx(0.125)
+    assert excel_import._num("12.345") == 12345          # không rõ quy ước: ưu tiên kiểu VN
+    assert excel_import._num("1.234", "en") == pytest.approx(1.234)
+    assert excel_import._num("1,234", "vn") == pytest.approx(1.234)
+
+
+@pytest.mark.parametrize("label", ["2024Q1", "4Q2024", "Q1/2024", "Quý 4/2024", "2024H1", "6T2024", "9 tháng 2024", "2025f"])
+def test_quarter_and_forecast_labels_are_not_years(label):
+    assert excel_import._year_of(label) is None
+
+
+def test_header_with_cagr_summary_cell_still_parses():
+    assert excel_import._row_years(["Chỉ tiêu", 2020, 2021, 2022, 2023, 2024, "CAGR 2020-2024"]) == \
+        {1: 2020, 2: 2021, 3: 2022, 4: 2023, 5: 2024}
+    csv = ("Đơn vị: tỷ đồng\nChỉ tiêu,2022,2023,2024,CAGR 2022-2024\nDoanh thu thuần,100,110,121,10%\n"
+           "Lợi nhuận sau thuế,10,11,12,9%\nTổng tài sản,200,210,220,5%\nVốn chủ sở hữu,120,125,130,4%\n").encode()
+    assert [y["year"] for y in excel_import.parse_financial_file(csv, "c.csv")["years"]] == [2022, 2023, 2024]
+
+
+def test_corrupt_xlsx_gives_format_error(client):
+    import io
+    import zipfile
+
+    from make_sample_xlsx import vietstock_like
+    src = zipfile.ZipFile(io.BytesIO(vietstock_like()))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            z.writestr(item, data[: len(data) // 2] if item.filename.startswith("xl/worksheets/") else data)
+    with pytest.raises(excel_import.FileFormatError):
+        excel_import.parse_financial_file(buf.getvalue(), "broken.xlsx")
+    r = client.post("/api/financials/upload", files={"file": ("broken.xlsx", buf.getvalue(), "application/octet-stream")})
+    assert r.status_code == 400
+
+
+def test_template_keeps_estimated_fields_blank():
+    import io
+
+    from openpyxl import load_workbook
+    t = "VNM"
+    fundamentals.delete_manual(t)
+    fundamentals.save_manual(t, [{"year": 2024, "revenue": 60_000, "net_income": 9_000,
+                                  "total_assets": 50_000, "equity": 35_000, "shares": 2_090}])
+    ws = load_workbook(io.BytesIO(excel_import.financial_template(t)))["BCTC"]
+    vals = {ws.cell(r, 2).value: ws.cell(r, 4).value for r in range(5, 24)}
+    assert vals["revenue"] == 60_000 and vals["shares"] == 2_090
+    assert vals["total_debt"] is None and vals["pretax_income"] is None and vals["operating_cf"] is None
+    assert vals["interest_expense"] is None  # bỏ trống → không ghi lại thành 0 "thật"
+    fundamentals.delete_manual(t)
+
+
+def test_shares_from_owner_capital_flag():
+    csv = ("Chỉ tiêu,2023,2024\nDoanh thu thuần,50000,60000\nLợi nhuận sau thuế,5000,6000\n"
+           "Tổng tài sản,90000,100000\nVốn chủ sở hữu,40000,45000\nVốn góp của chủ sở hữu,10000,10000\n").encode()
+    assert excel_import.parse_financial_file(csv, "s.csv")["shares_from_capital"] is True
+
+
+def test_pe_gordon_uses_steady_state_payout():
+    from app.analysis import valuation
+    rows = [{"year": 2024, "eps": 4000, "bvps": 22000, "dps": 700, "shares": 100, "net_income": 400}]
+    ratios = [{"roe": 0.184}]
+    v = valuation.valuation(rows, ratios, price=41_850, beta=1.0, sector="Ngân hàng")
+    pe = next(m for m in v["models"] if m["model"].startswith("P/E hợp lý"))
+    assert pe["value"] / 4000 > 6  # không còn bị kẹp ở sàn 5x do dùng tỷ lệ chi trả hiện tại thấp
+
+
+def test_negative_equity_scores_zero_roe_stability():
+    rows = [{"year": y, "revenue": 1000, "net_income": ni, "total_assets": 2000, "equity": e,
+             "total_liabilities": 2000 - e} for y, ni, e in
+            [(2021, 120, 1000), (2022, 125, 1100), (2023, 130, 1200), (2024, -1400, -200)]]
+    q = fundamental.score_quality(fundamental.ratios_by_year(rows), {"score": None}, "Công nghiệp")
+    assert next(p for p in q["parts"] if p["name"] == "Ổn định ROE")["score"] == 0
+
+
+def test_single_year_has_no_cagr():
+    rows = [{"year": 2024, "revenue": 1000, "net_income": 100, "total_assets": 2000, "equity": 900,
+             "total_liabilities": 1100}]
+    q = fundamental.score_quality(fundamental.ratios_by_year(rows), {"score": None}, "Công nghiệp")
+    assert q["revenue_cagr"] is None and q["ni_cagr"] is None
+    assert not any("CAGR" in p["name"] for p in q["parts"])
+
+
+def _settled_lot(ticker: str, qty: int, price: float):
+    from app.db import get_db
+    get_db().execute("INSERT INTO lots(ticker, quantity, price, buy_date) VALUES(?,?,?,?)",
+                     (ticker, qty, price, "2020-01-02"))
+
+
+def test_priced_sell_proposal_not_sold_below_approved_price():
+    broker_mod.get_broker().reset(500_000_000)
+    last = broker_mod.quote("FPT")["last"]
+    _settled_lot("FPT", 1000, last * 0.9)
+    pid = engine.create_proposal("FPT", "SELL", 1000, last * 1.03, "Chốt lời", source="agent")["proposal_id"]
+    assert engine.decide_proposal(pid, True)["status"] == "failed"   # thị trường thấp hơn giá đã duyệt
+    pid = engine.create_proposal("FPT", "SELL", 1000, last * 1.03, "Cắt lỗ", source="autotrader")["proposal_id"]
+    assert engine.decide_proposal(pid, True)["status"] == "executed"  # thoát vị thế của Auto-Trader: lệnh thị trường
+    broker_mod.get_broker().reset(500_000_000)
+
+
+def test_buy_proposal_near_ceiling_is_clamped():
+    broker_mod.get_broker().reset(500_000_000)
+    q = broker_mod.quote("HPG")
+    pid = engine.create_proposal("HPG", "BUY", 100, q["limits"].ceiling, "test", source="agent")["proposal_id"]
+    res = engine.decide_proposal(pid, True)
+    assert res["status"] == "executed", res
+    broker_mod.get_broker().reset(500_000_000)
+
+
+def test_buy_at_market_price_with_float_noise(monkeypatch):
+    b = broker_mod.get_broker()
+    b.reset(500_000_000)
+    real = broker_mod.quote
+
+    def noisy(t):
+        q = real(t)
+        return {**q, "last": round(q["last"] + 1e-7, 2) + 1e-9}
+    monkeypatch.setattr(broker_mod, "quote", noisy)
+    last = real("FPT")["last"]
+    assert b.place_order("FPT", "BUY", 100, last)["status"] == "FILLED"
+    b.reset(500_000_000)
+
+
+def test_timezone_aware_dates_accepted(client):
+    r = client.get("/api/stocks/FPT/technical", params={"start": "2025-01-01T00:00:00+07:00",
+                                                        "end": "2025-12-31T00:00:00+07:00"})
+    assert r.status_code == 200
+
+
+def test_agent_chat_serialized_per_session(monkeypatch):
+    import threading
+    import time as _t
+    active, peak = [0], [0]
+
+    def fake(message, session_id, attachments):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        _t.sleep(0.05)
+        active[0] -= 1
+        return {"session_id": session_id}
+    monkeypatch.setattr(agent_mod, "_chat", fake)
+    ts = [threading.Thread(target=agent_mod.chat, args=(f"q{i}", "same-session")) for i in range(4)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert peak[0] == 1

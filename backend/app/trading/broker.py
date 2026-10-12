@@ -31,6 +31,22 @@ class OrderError(ValueError):
 _ORDER_LOCK = threading.RLock()
 
 
+PRICE_EPS = 0.005  # giá nhập file ×1000 có thể lệch dấu phẩy động (32199.9999…) - không coi là khác giá
+
+
+def quote(ticker: str) -> dict:
+    """Giá khớp gần nhất, giá tham chiếu và biên độ trần/sàn của phiên (từ nguồn giá giao dịch được)."""
+    ticker = normalize_ticker(ticker)
+    hist = providers.get_history(ticker, days=60)
+    if not providers.is_tradeable_source(hist.attrs.get("source")):
+        raise OrderError(f"Chưa có giá thật cho {ticker} (đang dùng dữ liệu DEMO) - không thể đặt lệnh. "
+                         "Hãy kiểm tra kết nối nguồn dữ liệu hoặc tải file giá lên.")
+    last = round(float(hist["close"].iloc[-1]), 2)
+    reference = round(float(hist["close"].iloc[-2]), 2) if len(hist) > 1 else last
+    ex = universe.info(ticker)["exchange"]
+    return {"last": last, "reference": reference, "exchange": ex, "limits": vn_rules.price_limits(reference, ex)}
+
+
 def normalize_ticker(ticker: str) -> str:
     return (ticker or "").strip().upper()
 
@@ -185,21 +201,16 @@ class PaperBroker(BrokerBase):
         if ticker not in universe.UNIVERSE and providers._imported_history(ticker) is None:  # noqa: SLF001
             raise OrderError(f"Mã {ticker} không có trong danh sách theo dõi và chưa có dữ liệu giá nhập - "
                              "kiểm tra lại mã (có thể gõ nhầm).")
-        hist = providers.get_history(ticker, days=60)
-        if not providers.is_tradeable_source(hist.attrs.get("source")):
-            raise OrderError(f"Chưa có giá thật cho {ticker} (đang dùng dữ liệu DEMO) - không thể đặt lệnh. "
-                             "Hãy kiểm tra kết nối nguồn dữ liệu hoặc tải file giá lên.")
-        last_close = float(hist["close"].iloc[-1])
-        reference = float(hist["close"].iloc[-2]) if len(hist) > 1 else last_close
-        ex = universe.info(ticker)["exchange"]
+        q = quote(ticker)
+        last_close, reference, ex = q["last"], q["reference"], q["exchange"]
         quantity = int(quantity)
         if price is not None:
             limit = vn_rules.round_to_tick(float(price), ex)
             self._validate(ticker, side, quantity, limit, reference)
-            if side == "BUY" and limit < last_close:
+            if side == "BUY" and limit < last_close - PRICE_EPS:
                 raise OrderError(f"Giá mua {vn_num(limit)} thấp hơn giá thị trường {vn_num(last_close)} - lệnh LO "
                                  "sẽ chưa khớp. Hãy đặt giá ≥ giá thị trường hoặc chờ giá về vùng mua.")
-            if side == "SELL" and limit > last_close:
+            if side == "SELL" and limit > last_close + PRICE_EPS:
                 raise OrderError(f"Giá bán {vn_num(limit)} cao hơn giá thị trường {vn_num(last_close)} - lệnh LO "
                                  "sẽ chưa khớp.")
         price = last_close

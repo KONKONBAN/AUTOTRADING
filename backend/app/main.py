@@ -149,6 +149,11 @@ def stock_technical(ticker: str, start: str | None = None, end: str | None = Non
         ts_end = pd.Timestamp(end) if end else None
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, "Ngày không hợp lệ (định dạng YYYY-MM-DD).") from exc
+    # chuỗi ngày có múi giờ (…+07:00) → bỏ múi giờ, giữ ngày giờ địa phương (chỉ mục giá không có múi giờ)
+    ts_start = ts_start.tz_localize(None) if ts_start is not None and ts_start.tzinfo else ts_start
+    ts_end = ts_end.tz_localize(None) if ts_end is not None and ts_end.tzinfo else ts_end
+    if (ts_start is not None and pd.isna(ts_start)) or (ts_end is not None and pd.isna(ts_end)):
+        raise HTTPException(400, "Ngày không hợp lệ (định dạng YYYY-MM-DD).")
     if ts_start is not None and ts_end is not None and ts_start > ts_end:
         raise HTTPException(400, "Ngày bắt đầu phải trước ngày kết thúc.")
     df = providers.get_history(ticker.upper(), days=1500)

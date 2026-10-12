@@ -218,8 +218,9 @@ REQUIRED_FIELDS = ("revenue", "net_income", "total_assets", "equity")
 def _complete_row(r: dict) -> dict:
     """Bổ sung các trường suy ra được từ số liệu nhập tay."""
     r = {k: (float(v) if isinstance(v, (int, float, str)) and str(v).strip() not in {"", "None"} else None)
-         if k != "year" else int(v) for k, v in r.items() if k != "estimated_fields"}
+         if k != "year" else int(v) for k, v in r.items() if k not in {"estimated_fields", "defaulted_fields"}}
     estimated: list[str] = []
+    defaulted: list[str] = []  # bỏ trống → tính là 0 (không ghi lại thành số liệu "thật" khi sửa/tải file mẫu)
     for k in REQUIRED_FIELDS:
         if r.get(k) is None:
             raise ValueError(f"Năm {r.get('year')}: thiếu trường bắt buộc '{k}'")
@@ -230,6 +231,8 @@ def _complete_row(r: dict) -> dict:
         r["balance_warning"] = "Tổng tài sản ≠ Nợ phải trả + Vốn chủ sở hữu (lệch > 2%) - hãy kiểm tra lại."
     for k in ("gross_profit", "interest_expense", "depreciation", "current_assets", "cash", "inventory",
               "current_liabilities", "retained_earnings", "capex", "dps"):
+        if r.get(k) is None:
+            defaulted.append(k)
         r[k] = r.get(k) or 0.0
     if r.get("total_debt") is None:  # 0 là hợp lệ (doanh nghiệp không vay nợ) - chỉ ước tính khi bỏ trống
         r["total_debt"] = r["total_liabilities"] * 0.5
@@ -247,6 +250,7 @@ def _complete_row(r: dict) -> dict:
     else:
         r["shares"] = r["eps"] = r["bvps"] = None
     r["estimated_fields"] = estimated
+    r["defaulted_fields"] = defaulted
     return r
 
 

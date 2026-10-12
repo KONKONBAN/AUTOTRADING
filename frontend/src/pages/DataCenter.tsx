@@ -177,7 +177,7 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
 
   const loadPreview = (r: any, method: string) => {
     setDraft(r.years.map((y: any) => ({ ...y })));
-    setMeta({ method, unit: r.unit_detected ?? r.original_unit, mapping: r.mapping, warnings: r.warnings ?? [], missing: r.missing_fields, company: r.company, report_type: r.report_type });
+    setMeta({ method, unit: r.unit_detected ?? r.original_unit, mapping: r.mapping, warnings: r.warnings ?? [], missing: r.missing_fields, company: r.company, report_type: r.report_type, sharesFromCapital: !!r.shares_from_capital });
     toast("ok", `Đã đọc ${r.years.length} năm số liệu - hãy kiểm tra lại rồi bấm Lưu.`);
   };
   const uploadExcel = async (files: File[]) => {
@@ -216,14 +216,20 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
     const real = src === "demo" ? [] : src.includes("demo")
       ? fin.data.rows.filter((r: any) => fin.data.manual_years.includes(r.year)) : fin.data.rows;
     const rows = real.length ? real : [{ year: new Date().getFullYear() - 1 }];
-    setDraft(rows.map((r: any) => Object.fromEntries([["year", r.year], ...keys.map((k: string) => [k, r[k] ?? null])])));
+    // trường ước tính / bỏ trống (hệ thống tính là 0) giữ trống - không biến thành số liệu "thật" khi lưu lại
+    const blank = (r: any) => new Set<string>([...(r.estimated_fields ?? []), ...(r.defaulted_fields ?? [])]);
+    setDraft(rows.map((r: any) => {
+      const skip = blank(r);
+      return Object.fromEntries([["year", r.year], ...keys.map((k: string) => [k, skip.has(k) ? null : r[k] ?? null])]);
+    }));
     setMeta({ method: real.length ? "Chỉnh sửa số liệu hiện có" : "Nhập tay số liệu mới", warnings: [] });
   };
-  const MONEY_KEYS_EXCLUDED = new Set(["year", "shares", "dps"]);
   const rescale = (factor: number) => {
     if (!draft) return;
+    // số CP suy ra từ vốn góp (tỷ đồng / mệnh giá) phụ thuộc đơn vị → đổi theo; số CP nhập trực tiếp và DPS thì không
+    const fixed = new Set(["year", "dps", ...(meta?.sharesFromCapital ? [] : ["shares"])]);
     setDraft(draft.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) =>
-      [k, MONEY_KEYS_EXCLUDED.has(k) || typeof v !== "number" ? v : v * factor]))));
+      [k, fixed.has(k) || typeof v !== "number" ? v : v * factor]))));
   };
   const save = async () => {
     if (!draft) return;

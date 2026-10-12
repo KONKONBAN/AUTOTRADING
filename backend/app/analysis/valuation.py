@@ -122,10 +122,15 @@ def valuation(fin_rows: list[dict], ratios: list[dict], price: float, beta: floa
     if pb_fair is not None and bvps > 0:
         add("P/B hợp lý theo ROE", pb_fair * bvps, 0.35 if financial else 0.15,
             f"P/B = (ROE − g)/(re − g) = {vn_num(pb_fair, 2)}x")
-    payout = 1 - retention
-    if eps > 0 and re > g_eff:
-        pe_fair = _clip(max(payout, 0.25) * (1 + g_eff) / (re - g_eff), 5, 25)
-        add("P/E hợp lý (Gordon)", pe_fair * eps, 0.15, f"P/E hợp lý {vn_num(pe_fair, 1)}x")
+    if eps > 0:
+        # Trạng thái dừng: tăng trưởng g cần tái đầu tư g/ROE → tỷ lệ chi trả bền vững = 1 − g/ROE
+        # (nhất quán với P/B hợp lý; dùng tỷ lệ chi trả hiện tại thấp sẽ kéo P/E về sàn một cách sai lệch)
+        g_pe = g_eff if roe > g_eff else 0.0
+        payout_ss = 1 - g_pe / roe if roe > g_eff else 1.0
+        if re > g_pe:
+            pe_fair = _clip(payout_ss * (1 + g_pe) / (re - g_pe), 5, 25)
+            add("P/E hợp lý (Gordon)", pe_fair * eps, 0.15,
+                f"P/E hợp lý {vn_num(pe_fair, 1)}x (chi trả bền vững {vn_pct(payout_ss, 0)}, g {vn_pct(g_pe)})")
     if sector_pe and eps > 0:
         add("So sánh P/E ngành", sector_pe * eps, 0.2, f"P/E trung vị ngành {vn_num(sector_pe, 1)}x")
     if sector_pb and bvps > 0:

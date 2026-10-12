@@ -180,16 +180,23 @@ def score_quality(ratios: list[dict], f_score: dict, sector: str) -> dict:
     if spread is not None and not financial:
         part("Chênh lệch đòn bẩy (ROA_op − Sd)", spread, 0.5 + spread * 10, 1.0,
              "Dương: vay nợ khuếch đại ROE (MM mở rộng)")
-    span = max(last["year"] - ratios[0]["year"], 1)  # số năm thực tế (có thể có năm bị thiếu)
-    rev_cagr = _cagr(ratios[0]["revenue"], last["revenue"], span)
-    ni_cagr = _cagr(ratios[0]["net_income"], last["net_income"], span)
-    turned_loss = ratios[0]["net_income"] > 0 and last["net_income"] <= 0
-    part("Tăng trưởng doanh thu (CAGR)", rev_cagr, ((rev_cagr or 0) + 0.02) / 0.20, 1.0, "≥ 15%/năm là tốt")
-    part("Tăng trưởng LNST (CAGR)", ni_cagr,
-         0.0 if turned_loss or last["net_income"] <= 0 else ((ni_cagr or 0) + 0.02) / 0.22, 1.5,
-         "Doanh nghiệp đã chuyển từ lãi sang LỖ" if turned_loss else "≥ 15%/năm là tốt")
+    span = last["year"] - ratios[0]["year"]  # số năm thực tế (có thể có năm bị thiếu)
+    multi = len(ratios) >= 2 and span > 0     # chỉ 1 năm BCTC → không tính được tăng trưởng
+    rev_cagr = _cagr(ratios[0]["revenue"], last["revenue"], span) if multi else None
+    ni_cagr = _cagr(ratios[0]["net_income"], last["net_income"], span) if multi else None
+    turned_loss = multi and ratios[0]["net_income"] > 0 and last["net_income"] <= 0
+    if multi:
+        part("Tăng trưởng doanh thu (CAGR)", rev_cagr, ((rev_cagr or 0) + 0.02) / 0.20, 1.0, "≥ 15%/năm là tốt")
+    if multi or last["net_income"] <= 0:
+        part("Tăng trưởng LNST (CAGR)", ni_cagr,
+             0.0 if turned_loss or last["net_income"] <= 0 else ((ni_cagr or 0) + 0.02) / 0.22, 1.5,
+             "Doanh nghiệp đã chuyển từ lãi sang LỖ" if turned_loss
+             else "Doanh nghiệp đang LỖ" if last["net_income"] <= 0 else "≥ 15%/năm là tốt")
     roes = [r["roe"] for r in ratios if r["roe"] is not None]
-    stability = 1 - min(float(np.std(roes)) / max(abs(float(np.mean(roes))), 0.01), 1.5) / 1.5 if roes else 0
+    if any(r.get("negative_equity") for r in ratios):
+        stability = 0.0  # từng có vốn chủ âm = bất ổn tối đa (không chỉ tính trên các năm còn lành mạnh)
+    else:
+        stability = 1 - min(float(np.std(roes)) / max(abs(float(np.mean(roes))), 0.01), 1.5) / 1.5 if roes else 0
     part("Ổn định ROE", float(np.std(roes)) if roes else None, stability, 0.8, "Độ lệch chuẩn ROE thấp = ổn định")
     if f_score.get("score") is not None:
         part("Piotroski F-Score", f_score["score"], f_score["score"] / 9, 1.2, "≥ 7 là sức khỏe tài chính tốt")

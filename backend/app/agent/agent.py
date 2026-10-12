@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import uuid
 from datetime import date
@@ -132,9 +133,20 @@ def transcript(session_id: str) -> list[dict]:
 
 
 # ------------------------------------------------------------------ chat
+_SESSION_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
 def chat(message: str, session_id: str | None = None,
          attachments: list[tuple[bytes, str]] | None = None) -> dict:
     session_id = session_id or uuid.uuid4().hex[:12]
+    with _LOCKS_GUARD:
+        lock = _SESSION_LOCKS.setdefault(session_id, threading.Lock())
+    with lock:  # hai câu hỏi cùng lúc vào MỘT phiên chạy lần lượt - không ghi đè lịch sử của nhau
+        return _chat(message, session_id, attachments)
+
+
+def _chat(message: str, session_id: str, attachments: list[tuple[bytes, str]] | None) -> dict:
     if not settings.has_anthropic_credentials:
         return offline_chat(message, session_id)
     session = _load(session_id)

@@ -36,11 +36,12 @@ function OrderBox({ ticker, price, plan }: { ticker: string; price: number; plan
   const submit = async () => {
     setBusy(true);
     try {
-      await api.post("/api/orders", {
+      const r = await api.post("/api/orders", {
         ticker, side, quantity: qty, price: px, reason: "Lệnh thủ công từ trang phân tích",
         stop_loss: side === "BUY" ? plan.stop_loss : null, take_profit: side === "BUY" ? plan.take_profit_1 : null,
       });
-      toast("ok", `Đã khớp lệnh ${side === "BUY" ? "MUA" : "BÁN"} ${vnd(qty)} ${ticker} @ ${vnd(px)} (tài khoản giấy)`);
+      // lệnh LO khớp tại giá thị trường (≤ giá mua đặt / ≥ giá bán đặt) → hiển thị giá khớp thực tế
+      toast("ok", `Đã khớp lệnh ${side === "BUY" ? "MUA" : "BÁN"} ${vnd(r.quantity)} ${ticker} @ ${vnd(r.price)} (tài khoản giấy)`);
     } catch (e: any) {
       toast("err", e.message);
     } finally {

@@ -76,13 +76,15 @@ def system_view(ticker: str, start: str | None = None, end: str | None = None) -
     """Phân tích kỹ thuật định lượng của hệ thống cho mã/giai đoạn tương ứng để đối chiếu."""
     try:
         df = providers.get_history(ticker, days=750)
-    except Exception:  # noqa: BLE001
+        ts_end = pd.Timestamp(end).tz_localize(None) if end and pd.Timestamp(end).tzinfo else (pd.Timestamp(end) if end else None)
+        ts_start = pd.Timestamp(start).tz_localize(None) if start and pd.Timestamp(start).tzinfo else (pd.Timestamp(start) if start else None)
+    except Exception:  # noqa: BLE001 - mã/ngày không hợp lệ → bỏ qua phần đối chiếu của hệ thống
         return None
-    if end:
-        df = df[df.index <= pd.Timestamp(end)]
+    if ts_end is not None and not pd.isna(ts_end):
+        df = df[df.index <= ts_end]
     lookback_start = None
-    if start:
-        lookback_start = pd.Timestamp(start)
+    if ts_start is not None and not pd.isna(ts_start):
+        lookback_start = ts_start
         # giữ thêm 200 phiên trước giai đoạn để chỉ báo dài hạn có đủ dữ liệu
         pos = df.index.searchsorted(lookback_start)
         df = df.iloc[max(0, pos - 200):]

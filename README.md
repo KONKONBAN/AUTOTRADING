@@ -141,7 +141,7 @@ frontend/src/  React + TypeScript + Vite, biểu đồ TradingView Lightweight C
 cd backend && ../.venv/bin/python -m pytest -q
 ```
 
-65 bài kiểm thử, trong đó các công thức được đối chiếu trực tiếp với **ví dụ trong giáo trình** (VD: lũy kế 15% / bình quân 4,7%; IRR 4,17%; sinh lời kỳ vọng 18,22%; YTM 8,04%; TP chuyển đổi tỷ lệ 25; NPV +137,2 tỷ; WACC 11,56%; trần/sàn VNM 61.200/53.200; tách lệnh 1.530 = 1.500 + 30), cùng bộ đọc Excel, luật T+2/lô chẵn, Auto-Trader, backtest, tối ưu danh mục, vòng lặp AI Agent (giả lập) và các kiểm thử hồi quy cho lỗi đã sửa (`tests/test_review_fixes.py`).
+75 bài kiểm thử, trong đó các công thức được đối chiếu trực tiếp với **ví dụ trong giáo trình** (VD: lũy kế 15% / bình quân 4,7%; IRR 4,17%; sinh lời kỳ vọng 18,22%; YTM 8,04%; TP chuyển đổi tỷ lệ 25; NPV +137,2 tỷ; WACC 11,56%; trần/sàn VNM 61.200/53.200; tách lệnh 1.530 = 1.500 + 30), cùng bộ đọc Excel, luật T+2/lô chẵn, Auto-Trader, backtest, tối ưu danh mục, vòng lặp AI Agent (giả lập) và các kiểm thử hồi quy cho lỗi đã sửa (`tests/test_review_fixes.py`).
 
 ---
 

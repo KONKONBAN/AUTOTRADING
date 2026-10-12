@@ -17,10 +17,7 @@ import re
 import unicodedata
 from datetime import date, datetime
 
-import zipfile
-
 from openpyxl import Workbook, load_workbook
-from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -39,6 +36,9 @@ def norm(text) -> str:
 
 _VN_NUM = re.compile(r"^[-(]?\d{1,3}(\.\d{3})+(,\d+)?\)?$|^[-(]?\d+,\d{1,2}\)?$")
 _EN_NUM = re.compile(r"^[-(]?\d{1,3}(,\d{3})+(\.\d+)?\)?$|^[-(]?\d+\.\d{1,2}\)?$")
+# Số thập phân KHÔNG thể là nhóm hàng nghìn: phần nguyên ≥ 4 chữ số hoặc bằng 0, hoặc ≥ 4 chữ số thập phân
+_EN_DEC = re.compile(r"^[-(]?(\d{4,}|0)\.\d+\)?$|^[-(]?\d+\.\d{4,}\)?$")
+_VN_DEC = re.compile(r"^[-(]?(\d{4,}|0),\d+\)?$|^[-(]?\d+,\d{4,}\)?$")
 # Nhóm hàng nghìn hợp lệ: 1-3 chữ số đầu (không bắt đầu bằng 0) rồi các nhóm 3 chữ số
 _GROUP_DOT = re.compile(r"^[1-9]\d{0,2}(\.\d{3})+$")
 _GROUP_COMMA = re.compile(r"^[1-9]\d{0,2}(,\d{3})+$")
@@ -52,9 +52,9 @@ def detect_convention(grid: list[list], delimiter: str | None = None) -> str | N
             if not isinstance(c, str):
                 continue
             t = c.strip().replace("\xa0", "").replace(" ", "")
-            if _VN_NUM.match(t):
+            if _VN_NUM.match(t) or _VN_DEC.match(t):
                 vn += 1
-            elif _EN_NUM.match(t):
+            elif _EN_NUM.match(t) or _EN_DEC.match(t):
                 en += 1
     if delimiter == ";":
         vn += 2
@@ -146,9 +146,10 @@ UNIT_PATTERNS = [("ty dong", 1.0), ("ty vnd", 1.0), ("billion", 1.0), ("trieu do
                  ("vnd", 1e-9), ("dong", 1e-9)]
 
 
-# Cột quý / bán niên / lũy kế 6-9 tháng: Q1/2024, 2024Q1, 4Q2024, Quý 4/2024, H1, 2024H1, 6T, 9 tháng, 6M
+# Cột quý / bán niên / lũy kế 6-9 tháng: Q1/2024, 2024Q1, 4Q2024, Quý 4/2024, H1, 2024H1, 1H2025, 6T, 9 tháng, 6M
 _QUARTER = re.compile(r"(?<![a-zà-ỹ])(q|quy|quý)\s*[1-4](?!\d)|(?<!\d)[1-4]\s*q(?![a-zà-ỹ])"
-                      r"|(?<![a-zà-ỹ])h[12](?!\d)|(?<!\d)[69]\s*(tháng|thang|th|t|m)(?![a-zà-ỹ])", re.I)
+                      r"|(?<![a-zà-ỹ])h[12](?!\d)|(?<!\d)[12]\s*h(?![a-zà-ỹ])|b[aá]n\s*ni[eê]n"
+                      r"|(?<!\d)[69]\s*(tháng|thang|th|t|m)(?![a-zà-ỹ])", re.I)
 
 
 def _year_of(v) -> int | None:
@@ -209,7 +210,7 @@ def _grids(data: bytes, filename: str) -> list[tuple[str, list[list], str | None
         return [("csv", rows, detect_convention(rows, delim))]
     try:
         wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
-    except (zipfile.BadZipFile, KeyError, InvalidFileException, OSError) as exc:
+    except Exception as exc:  # noqa: BLE001 - zip/XML/zlib hỏng… đều là lỗi định dạng file, không phải lỗi máy chủ
         raise FileFormatError("Không đọc được file Excel - hãy lưu lại dạng .xlsx hoặc CSV UTF-8.") from exc
     out = []
     try:  # read_only: lỗi XML của sheet hỏng chỉ xuất hiện khi duyệt dòng
@@ -265,7 +266,9 @@ def _row_years(row: list) -> dict[int, int]:
                 cols[j] = int(c)
         elif (y := _year_of(c)) is not None:
             cols[j] = y
-    # Giữ dãy năm liền nhau dài nhất (bỏ ô tóm tắt kiểu "CAGR 2020-2024"); các năm rời rạc → không phải tiêu đề
+    # Tách thành các dãy năm liền nhau. Ô năm đứng lẻ (VD ô tóm tắt "CAGR 2020-2024") bị bỏ; giữ MỌI dãy
+    # có ≥ 2 năm (VD 2014-2016 và 2023-2024 đều giữ, không đánh rơi các năm gần nhất);
+    # toàn năm rời rạc → không phải dòng tiêu đề.
     runs: list[list[tuple[int, int]]] = []
     for j in sorted(cols):
         if runs and abs(cols[j] - runs[-1][-1][1]) <= 3:
@@ -274,8 +277,7 @@ def _row_years(row: list) -> dict[int, int]:
             runs.append([(j, cols[j])])
     if len(runs) <= 1:
         return cols
-    best = max(runs, key=len)
-    return dict(best) if len(best) >= 2 else {}
+    return {j: y for run in runs if len(run) >= 2 for j, y in run}
 
 
 def _parse_grid(grid: list[list], conv: str | None = None) -> dict | None:

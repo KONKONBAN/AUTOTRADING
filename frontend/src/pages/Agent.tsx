@@ -44,6 +44,7 @@ export default function Agent() {
   const activeRef = useRef<string | null>(null);
   const navSeq = useRef(0);
   const pending = useRef<{ sid: string | null } | null>(null);
+  const openSeq = useRef(0);  // chỉ lần mở cuộc trò chuyện mới nhất được áp dụng
   const [typingHere, setTypingHere] = useState(false);
 
   const loadSessions = () => api.get("/api/agent/sessions").then(setSessions).catch(() => {});
@@ -61,14 +62,23 @@ export default function Agent() {
 
   const open = async (id: string) => {
     if (id === activeRef.current) return;  // đang xem đúng cuộc trò chuyện này
+    const req = ++openSeq.current;
+    let r: any;
+    try {
+      r = await api.get(`/api/agent/sessions/${id}`);
+    } catch (e: any) {  // giữ nguyên màn hình hiện tại để bấm lại là thử tải lại
+      if (openSeq.current === req) toast("err", `Không tải được cuộc trò chuyện: ${e.message}`);
+      return;
+    }
+    if (openSeq.current !== req) return;
     navSeq.current++;
     activeRef.current = id;
     setSid(id);
     setTypingHere(pending.current?.sid === id);
-    const r = await api.get(`/api/agent/sessions/${id}`);
-    if (activeRef.current === id) setMsgs(r.messages);
+    setMsgs(r.messages);
   };
   const newChat = () => {
+    openSeq.current++;
     navSeq.current++;
     activeRef.current = null;
     setTypingHere(false);
@@ -93,20 +103,36 @@ export default function Agent() {
     setFiles([]);
     setTypingHere(true);
     const nav = navSeq.current;
+    const sentSid = sid;
     pending.current = { sid };
+    const reply = (r: any): Msg => ({ role: "assistant", text: r.reply, tools: r.tools, proposals: r.proposals });
     try {
       const r = await api.form("/api/agent/chat", form);
       if (navSeq.current === nav) {  // người dùng vẫn ở cuộc trò chuyện này
         setSid(r.session_id);
         activeRef.current = r.session_id;
-        setMsgs((m) => [...m, { role: "assistant", text: r.reply, tools: r.tools, proposals: r.proposals }]);
+        setMsgs((m) => [...m, reply(r)]);
       } else if (activeRef.current === r.session_id) {  // đã rời đi rồi quay lại: tải lại bản ghi đầy đủ
         const s = await api.get(`/api/agent/sessions/${r.session_id}`);
-        if (activeRef.current === r.session_id) setMsgs(s.messages);
+        if (activeRef.current === r.session_id) {
+          const m: Msg[] = s.messages;
+          const lastUser = [...m].reverse().find((x) => x.role === "user");
+          if (lastUser?.text?.trim() !== message) {
+            // câu hỏi không được lưu (lỗi API / bị từ chối) → hiển thị lại câu hỏi và phản hồi
+            setMsgs([...m, { role: "user", text: message }, reply(r)]);
+          } else if (r.proposals?.length && m.length) {
+            // thẻ đề xuất lệnh không nằm trong bản ghi lưu trữ → gắn vào câu trả lời cuối
+            setMsgs([...m.slice(0, -1), { ...m[m.length - 1], proposals: r.proposals }]);
+          } else {
+            setMsgs(m);
+          }
+        }
       }
       loadSessions();
     } catch (e: any) {
       if (navSeq.current === nav) setMsgs((m) => [...m, { role: "assistant", text: `❌ ${e.message}` }]);
+      else if (sentSid && activeRef.current === sentSid)
+        setMsgs((m) => [...m, { role: "user", text: message }, { role: "assistant", text: `❌ ${e.message}` }]);
     } finally {
       pending.current = null;
       setBusy(false);

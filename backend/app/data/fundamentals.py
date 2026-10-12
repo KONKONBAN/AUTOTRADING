@@ -229,6 +229,11 @@ def _complete_row(r: dict) -> dict:
         r["total_liabilities"] = r["total_assets"] - r["equity"]
     if abs(r["total_assets"] - r["total_liabilities"] - r["equity"]) > 0.02 * r["total_assets"]:
         r["balance_warning"] = "Tổng tài sản ≠ Nợ phải trả + Vốn chủ sở hữu (lệch > 2%) - hãy kiểm tra lại."
+    if r.get("current_liabilities") is None and r.get("current_assets"):
+        # có tài sản ngắn hạn mà thiếu nợ ngắn hạn → ước tính như nguồn TCBS (60% nợ phải trả) và gắn cờ,
+        # thay vì coi là 0 (hệ số thanh toán vô nghĩa)
+        r["current_liabilities"] = r["total_liabilities"] * 0.6
+        estimated.append("current_liabilities")
     for k in ("gross_profit", "interest_expense", "depreciation", "current_assets", "cash", "inventory",
               "current_liabilities", "retained_earnings", "capex", "dps"):
         if r.get(k) is None:

@@ -311,3 +311,61 @@ def test_agent_chat_serialized_per_session(monkeypatch):
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert peak[0] == 1
+
+
+# ------------------------------------------------------------------ vòng kiểm chứng thứ ba
+def test_pe_gordon_monotonic_in_roe():
+    from app.analysis import valuation
+
+    def pe(roe):
+        rows = [{"year": 2024, "eps": 1000, "bvps": 10_000, "dps": 0, "shares": 100, "net_income": 100}]
+        v = valuation.valuation(rows, [{"roe": roe}], price=10_000, beta=1.0, sector="Ngân hàng")
+        m = next((m for m in v["models"] if m["model"].startswith("P/E hợp lý")), None)
+        return m["value"] / 1000 if m else None
+    assert pe(None) is None and pe(-0.1) is None   # vốn chủ âm / ROE âm: không dùng mô hình
+    seq = [pe(x) for x in (0.02, 0.035, 0.04, 0.05, 0.08, 0.10, 0.15, 0.25)]
+    assert all(b >= a - 1e-9 for a, b in zip(seq, seq[1:])), seq
+
+
+def test_english_three_decimal_file():
+    csv = ("Unit: billion VND\nItem,2022,2023,2024\nNet revenue,44010.123,52618.456,62849.789\n"
+           "Net profit after tax,950.500,1020.250,1100.125\nTotal assets,61697.123,65000.456,70000.789\n"
+           "Total equity,25000.000,27000.500,29000.250\n").encode()
+    r = excel_import.parse_financial_file(csv, "en.csv")
+    assert r["number_format"] == "en"
+    assert [round(y["net_income"], 3) for y in r["years"]] == [950.5, 1020.25, 1100.125]
+
+
+@pytest.mark.parametrize("label", ["1H2025", "2H2024", "2025 1H", "Bán niên 2024"])
+def test_half_year_labels_are_not_years(label):
+    assert excel_import._year_of(label) is None
+
+
+def test_year_header_keeps_all_runs():
+    assert excel_import._row_years(["Chỉ tiêu", 2014, 2015, 2016, 2023, 2024]) == \
+        {1: 2014, 2: 2015, 3: 2016, 4: 2023, 5: 2024}
+
+
+@pytest.mark.parametrize("member", ["xl/styles.xml", "xl/workbook.xml"])
+def test_corrupt_workbook_parts_give_format_error(member):
+    import io
+    import zipfile
+
+    from make_sample_xlsx import vietstock_like
+    src = zipfile.ZipFile(io.BytesIO(vietstock_like()))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            z.writestr(item, data[: len(data) // 2] if item.filename == member else data)
+    with pytest.raises(excel_import.FileFormatError):
+        excel_import.parse_financial_file(buf.getvalue(), "broken.xlsx")
+
+
+def test_blank_current_liabilities_is_estimated_not_zero():
+    row = fundamentals._complete_row({"year": 2024, "revenue": 100, "net_income": 10, "total_assets": 200,
+                                      "equity": 100, "current_assets": 120})
+    assert row["current_liabilities"] == pytest.approx(60) and "current_liabilities" in row["estimated_fields"]
+    row = fundamentals._complete_row({"year": 2024, "revenue": 100, "net_income": 10, "total_assets": 200,
+                                      "equity": 100})
+    assert row["current_liabilities"] == 0 and "current_liabilities" in row["defaulted_fields"]

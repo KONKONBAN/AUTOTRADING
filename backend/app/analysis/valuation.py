@@ -122,11 +122,13 @@ def valuation(fin_rows: list[dict], ratios: list[dict], price: float, beta: floa
     if pb_fair is not None and bvps > 0:
         add("P/B hợp lý theo ROE", pb_fair * bvps, 0.35 if financial else 0.15,
             f"P/B = (ROE − g)/(re − g) = {vn_num(pb_fair, 2)}x")
-    if eps > 0:
+    roe_raw = ratios[-1]["roe"]
+    if eps > 0 and roe_raw is not None and roe_raw > 0:  # vốn chủ âm / ROE ≤ 0: mô hình vô nghĩa
         # Trạng thái dừng: tăng trưởng g cần tái đầu tư g/ROE → tỷ lệ chi trả bền vững = 1 − g/ROE
-        # (nhất quán với P/B hợp lý; dùng tỷ lệ chi trả hiện tại thấp sẽ kéo P/E về sàn một cách sai lệch)
-        g_pe = g_eff if roe > g_eff else 0.0
-        payout_ss = 1 - g_pe / roe if roe > g_eff else 1.0
+        # (nhất quán với P/B hợp lý). Tăng trưởng chỉ tạo giá trị khi ROE > re; ngược lại P/E = 1/re
+        # (giữ mô hình đơn điệu: DN ROE thấp không bao giờ được P/E hợp lý cao hơn DN ROE cao).
+        g_pe = g_eff if roe_raw > re else 0.0
+        payout_ss = 1 - g_pe / roe_raw
         if re > g_pe:
             pe_fair = _clip(payout_ss * (1 + g_pe) / (re - g_pe), 5, 25)
             add("P/E hợp lý (Gordon)", pe_fair * eps, 0.15,

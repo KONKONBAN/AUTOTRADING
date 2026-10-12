@@ -93,7 +93,8 @@ def metrics(prices: pd.Series, market: pd.Series | None = None, rf: float = RISK
             beta = float(cov[0, 1] / cov[1, 1])
             corr = float(np.corrcoef(joined.iloc[:, 0], joined.iloc[:, 1])[0, 1])
             m_years = len(joined) / TRADING_DAYS
-            m_cagr = float((market.iloc[-1] / market.iloc[0]) ** (1 / max(m_years, 1e-9)) - 1)
+            # cùng cửa sổ thời gian với cổ phiếu
+            m_cagr = float((1 + joined.iloc[:, 1]).prod() ** (1 / max(m_years, 1e-9)) - 1)
             # CAPM: E(R) = rf + β (Rm - rf); alpha Jensen = R - E(R)
             capm = rf + beta * (m_cagr - rf)
             systematic_share = corr ** 2

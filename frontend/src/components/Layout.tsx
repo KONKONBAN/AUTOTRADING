@@ -49,8 +49,11 @@ function TickerSearch() {
   const results = useMemo(() => {
     const s = q.trim().toUpperCase();
     if (!s) return universe.slice(0, 8);
+    // khớp chính xác mã trước, rồi mã bắt đầu bằng chuỗi tìm, rồi các kết quả khác (tránh FPT → FRT)
+    const rank = (u: { ticker: string }) => (u.ticker === s ? 0 : u.ticker.startsWith(s) ? 1 : u.ticker.includes(s) ? 2 : 3);
     return universe
       .filter((u) => u.ticker.includes(s) || u.name.toUpperCase().includes(s) || u.sector.toUpperCase().includes(s))
+      .sort((a, b) => rank(a) - rank(b))
       .slice(0, 10);
   }, [q, universe]);
   useEffect(() => {

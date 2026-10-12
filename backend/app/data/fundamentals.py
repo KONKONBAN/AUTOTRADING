@@ -141,7 +141,22 @@ def _live(ticker: str) -> list[dict]:
         assets = float(_g(b, "asset", default=0))
         equity = float(_g(b, "equity", default=0))
         liabilities = float(_g(b, "debt", "payable", default=assets - equity))
-        borrow = float(_g(b, "shortDebt", default=0) or 0) + float(_g(b, "longDebt", default=0) or 0)
+        st, lt = _g(b, "shortDebt"), _g(b, "longDebt")
+        st = float(st) if st is not None else None
+        lt = float(lt) if lt is not None else None
+        estimated: list[str] = []
+        if st is not None and lt is not None and liabilities and abs(st + lt - liabilities) <= 0.03 * abs(liabilities):
+            # shortDebt/longDebt là TỔNG Nợ ngắn hạn / Nợ dài hạn (cộng lại = Nợ phải trả), không phải tiền vay
+            current_liab, borrow = st, None
+        else:
+            current_liab = None
+            borrow = (st or 0.0) + (lt or 0.0) if (st is not None or lt is not None) else None
+        if borrow is None:
+            borrow = liabilities * 0.5
+            estimated.append("total_debt")
+        if current_liab is None:
+            current_liab = liabilities * 0.6
+            estimated.append("current_liabilities")
         interest = abs(float(_g(i, "interestExpense", default=0) or 0))
         pretax = float(_g(i, "preTaxProfit", default=ni / (1 - TAX_RATE)))
         eps = float(_g(q, "earningPerShare", default=0) or 0)
@@ -151,9 +166,9 @@ def _live(ticker: str) -> list[dict]:
             "gross_profit": float(_g(i, "grossProfit", default=0) or 0),
             "ebit": pretax + interest, "interest_expense": interest, "pretax_income": pretax,
             "net_income": ni, "depreciation": 0.0, "total_assets": assets,
-            "total_liabilities": liabilities, "total_debt": borrow or liabilities * 0.5,
+            "total_liabilities": liabilities, "total_debt": borrow, "estimated_fields": estimated,
             "equity": equity, "current_assets": float(_g(b, "shortAsset", default=0) or 0),
-            "current_liabilities": float(_g(b, "shortDebt", default=0) or 0) or liabilities * 0.6,
+            "current_liabilities": current_liab,
             "inventory": float(_g(b, "inventory", default=0) or 0),
             "cash": float(_g(b, "cash", default=0) or 0),
             "operating_cf": float(_g(c, "fromSale", default=ni) or ni),
@@ -203,7 +218,8 @@ REQUIRED_FIELDS = ("revenue", "net_income", "total_assets", "equity")
 def _complete_row(r: dict) -> dict:
     """Bổ sung các trường suy ra được từ số liệu nhập tay."""
     r = {k: (float(v) if isinstance(v, (int, float, str)) and str(v).strip() not in {"", "None"} else None)
-         if k != "year" else int(v) for k, v in r.items()}
+         if k != "year" else int(v) for k, v in r.items() if k != "estimated_fields"}
+    estimated: list[str] = []
     for k in REQUIRED_FIELDS:
         if r.get(k) is None:
             raise ValueError(f"Năm {r.get('year')}: thiếu trường bắt buộc '{k}'")
@@ -215,13 +231,22 @@ def _complete_row(r: dict) -> dict:
     for k in ("gross_profit", "interest_expense", "depreciation", "current_assets", "cash", "inventory",
               "current_liabilities", "retained_earnings", "capex", "dps"):
         r[k] = r.get(k) or 0.0
-    r["total_debt"] = r.get("total_debt") or r["total_liabilities"] * 0.5
-    r["pretax_income"] = r.get("pretax_income") or r["net_income"] / (1 - TAX_RATE)
+    if r.get("total_debt") is None:  # 0 là hợp lệ (doanh nghiệp không vay nợ) - chỉ ước tính khi bỏ trống
+        r["total_debt"] = r["total_liabilities"] * 0.5
+        estimated.append("total_debt")
+    if r.get("pretax_income") is None:
+        r["pretax_income"] = r["net_income"] / (1 - TAX_RATE)
+        estimated.append("pretax_income")
     r["ebit"] = r["pretax_income"] + r["interest_expense"]
-    r["operating_cf"] = r.get("operating_cf") if r.get("operating_cf") is not None else r["net_income"]
+    if r.get("operating_cf") is None:
+        r["operating_cf"] = r["net_income"]
+        estimated.append("operating_cf")
     if r.get("shares"):
         r["eps"] = r["net_income"] * 1e9 / (r["shares"] * 1e6)
         r["bvps"] = r["equity"] * 1e9 / (r["shares"] * 1e6)
+    else:
+        r["shares"] = r["eps"] = r["bvps"] = None
+    r["estimated_fields"] = estimated
     return r
 
 
@@ -277,16 +302,16 @@ def get_financials(ticker: str) -> dict:
     manual = list_manual(ticker)
     result["manual_years"] = [m["year"] for m in manual]
     if manual:
-        by_year = {r["year"]: r for r in result["rows"]}
-        shares_hint = next((r.get("shares") for r in reversed(result["rows"]) if r.get("shares")), None)
+        # Không bao giờ trộn số liệu thật của người dùng với số liệu DEMO bịa ra
+        auto_rows = [] if result["source"] == "demo" else result["rows"]
+        by_year = {r["year"]: r for r in auto_rows}
+        shares_hint = next((r.get("shares") for r in reversed(auto_rows) if r.get("shares")), None)
         for m in manual:
             m = {k: v for k, v in m.items() if k != "updated_at"}
             if not m.get("shares") and shares_hint:
-                m["shares"] = shares_hint
+                m["shares"] = shares_hint  # chỉ lấy từ nguồn thật, không bao giờ từ DEMO
             by_year[m["year"]] = _complete_row(m)
-        rows = [by_year[y] for y in sorted(by_year)]
-        # chỉ giữ chuỗi năm liên tục gần nhất có chứa số liệu nhập tay
-        result["rows"] = rows[-8:]
+        result["rows"] = [by_year[y] for y in sorted(by_year)][-8:]
         all_manual = all(r["year"] in result["manual_years"] for r in result["rows"])
         result["source"] = "manual" if all_manual else f"manual+{result['source']}"
     db.cache_set(key, result, 6 * 3600 if result["source"] != "demo" else 3600)

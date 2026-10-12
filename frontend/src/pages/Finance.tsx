@@ -72,7 +72,11 @@ function Planner() {
           <div className="grid g4">
             <Kpi label="Thặng dư mỗi tháng" value={money(res.summary.surplus)} valueClass={res.summary.surplus > 0 ? "up" : "down"} sub={<span className="muted">Tỷ lệ tiết kiệm {pct(res.summary.savings_rate, 0)}</span>} />
             <Kpi label="Quỹ dự phòng mục tiêu" value={money(res.emergency_fund.target)} sub={<span className={res.emergency_fund.gap > 0 ? "down" : "up"}>{res.emergency_fund.gap > 0 ? `Còn thiếu ${money(res.emergency_fund.gap)}` : "Đã đủ"}</span>} />
-            <Kpi label="Có thể đầu tư/tháng" value={money(res.investable_monthly)} sub={<span className="muted">LN kỳ vọng danh mục {pct(res.portfolio_expected_return)}/năm</span>} />
+            <Kpi label="Có thể đầu tư/tháng" value={money(res.investable_monthly)} sub={<span className="muted">
+              {res.emergency_build?.months
+                ? <>{res.emergency_build.months} tháng đầu: {money(res.emergency_build.monthly)}/th vào quỹ dự phòng, đầu tư {money(res.emergency_build.invest_during_build)}/th · </>
+                : null}
+              LN kỳ vọng {pct(res.portfolio_expected_return)}/năm</span>} />
             <Kpi label="Con số tự do tài chính" value={money(res.summary.fire_number)} sub={<span className="muted">= 25 × chi tiêu năm (quy tắc 4%)</span>} />
           </div>
           <div className="grid g3">
@@ -214,7 +218,8 @@ function Calculators() {
       toast("err", e.message);
     }
   };
-  const flat = res === null ? [] : typeof res === "object" ? Object.entries(res).filter(([k, v]) => k !== "schedule" && k !== "cashflows" && typeof v !== "object") : [["Kết quả", res]];
+  const scalarKey = calc === "capm" ? "capm_rate" : calc === "bond_ytm" ? "ytm_rate" : "Kết quả";
+  const flat = res === null ? [] : typeof res === "object" ? Object.entries(res).filter(([k, v]) => k !== "schedule" && k !== "cashflows" && typeof v !== "object") : [[scalarKey, res]];
   return (
     <div className="grid g-main">
       <Card title="Máy tính tài chính" icon={<Calculator size={16} />} hint="Theo giáo trình Toán tài chính, PTVĐTCK chương 3, CFA (DCF & WACC), TCDN chương 9">
@@ -271,6 +276,8 @@ const LABELS: Record<string, string> = {
   discount: "Tiền chiết khấu", fee: "Hoa hồng", proceeds: "Số tiền nhận được", actual_rate: "Lãi suất thực tế",
   total_interest: "Tổng tiền lãi", total_paid: "Tổng tiền phải trả", nal: "Lợi ích ròng của thuê (NAL)", discount_rate: "Tỷ lệ chiết khấu rd(1−t)",
   "Kết quả": "Kết quả",
+  capm_rate: "Chi phí vốn chủ sở hữu re (CAPM)",
+  ytm_rate: "Lợi suất đáo hạn (YTM)",
 };
 
 export default function Finance() {

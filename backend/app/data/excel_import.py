@@ -17,7 +17,10 @@ import re
 import unicodedata
 from datetime import date, datetime
 
+import zipfile
+
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -34,8 +37,36 @@ def norm(text) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9%/ ]+", " ", s)).strip()
 
 
-def _num(v) -> float | None:
-    """Đọc số từ ô Excel/CSV: hỗ trợ 1.234.567 | 1,234,567 | 1.234,5 | 1,234.5 | (123) = -123."""
+_VN_NUM = re.compile(r"^[-(]?\d{1,3}(\.\d{3})+(,\d+)?\)?$|^[-(]?\d+,\d{1,2}\)?$")
+_EN_NUM = re.compile(r"^[-(]?\d{1,3}(,\d{3})+(\.\d+)?\)?$|^[-(]?\d+\.\d{1,2}\)?$")
+
+
+def detect_convention(grid: list[list], delimiter: str | None = None) -> str | None:
+    """Đoán quy ước số của cả file: 'vn' (1.234.567,8) hay 'en' (1,234,567.8)."""
+    vn = en = 0
+    for row in grid[:400]:
+        for c in row:
+            if not isinstance(c, str):
+                continue
+            t = c.strip().replace("\xa0", "").replace(" ", "")
+            if _VN_NUM.match(t):
+                vn += 1
+            elif _EN_NUM.match(t):
+                en += 1
+    if delimiter == ";":
+        vn += 2
+    if vn > en:
+        return "vn"
+    if en > vn:
+        return "en"
+    return None
+
+
+def _num(v, conv: str | None = None) -> float | None:
+    """Đọc số từ ô Excel/CSV: hỗ trợ 1.234.567 | 1,234,567 | 1.234,5 | 1,234.5 | (123) = -123.
+
+    conv = 'vn' (dấu chấm phân cách hàng nghìn, phẩy thập phân) | 'en' | None (tự đoán từng ô).
+    """
     if v is None or isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
@@ -43,14 +74,18 @@ def _num(v) -> float | None:
     s = str(v).strip().replace("\xa0", "").replace(" ", "")
     if not s or s in {"-", "--", "n/a", "N/A"}:
         return None
-    neg = s.startswith("(") and s.endswith(")")
-    s = s.strip("()")
-    if "," in s and "." in s:
+    neg = s.startswith("(") and s.endswith(")") or s.startswith("-")
+    s = s.strip("()").lstrip("-")
+    if conv == "vn":
+        s = s.replace(".", "").replace(",", ".")
+    elif conv == "en":
+        s = s.replace(",", "")
+    elif "," in s and "." in s:
         s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
     elif s.count(",") > 1 or (s.count(",") == 1 and len(s.split(",")[1]) == 3):
         s = s.replace(",", "")
-    elif s.count(".") > 1:
-        s = s.replace(".", "")
+    elif s.count(".") > 1 or (s.count(".") == 1 and len(s.split(".")[1]) == 3):
+        s = s.replace(".", "")  # kiểu Việt Nam: 12.345 = mười hai nghìn
     else:
         s = s.replace(",", ".")
     try:
@@ -108,54 +143,130 @@ UNIT_PATTERNS = [("ty dong", 1.0), ("ty vnd", 1.0), ("billion", 1.0), ("trieu do
                  ("vnd", 1e-9), ("dong", 1e-9)]
 
 
+_QUARTER = re.compile(r"(\bq|quy|quý)\s*[1-4]\b|\b[1-4]\s*q\b|\bh[12]\b|\b[69]\s*(t|th|thang|tháng|m)\b|\b[69]m\b",
+                      re.I)
+
+
 def _year_of(v) -> int | None:
     if isinstance(v, (int, float)) and 1990 <= v <= 2100 and float(v).is_integer():
         return int(v)
     if isinstance(v, (datetime, date)):
         return v.year
     s = str(v or "")
-    if re.search(r"(q|quy|quý)\s*\d", s, re.I) and not re.search(r"(q|quy|quý)\s*4", s, re.I):
-        return None  # bỏ qua cột quý (trừ Q4 có thể là số cả năm)
+    if _QUARTER.search(s):
+        return None  # cột quý / 6 tháng / 9 tháng không phải số liệu cả năm
+    if re.search(r"(19|20)\d{2}\s*[FE]\b", s) or re.search(r"du phong|ke hoach|forecast|\bKH\b", norm(s) + " " + s):
+        return None  # cột dự phóng / kế hoạch
     m = re.search(r"(19|20)\d{2}", s)
     if m and len(s) <= 30:
         return int(m.group(0))
     return None
 
 
-def _grids(data: bytes, filename: str) -> list[tuple[str, list[list]]]:
+class FileFormatError(ValueError):
+    pass
+
+
+def _decode_text(data: bytes) -> str:
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16")
+    for enc in ("utf-8-sig", "cp1258", "latin-1"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="ignore")
+
+
+def _grids(data: bytes, filename: str) -> list[tuple[str, list[list], str | None]]:
+    """Đọc file thành các bảng [(tên sheet, dòng, quy ước số)]."""
     name = filename.lower()
-    if name.endswith((".csv", ".txt")):
-        text = data.decode("utf-8-sig", errors="ignore")
-        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t") if text.strip() else csv.excel
-        return [("csv", [row for row in csv.reader(io.StringIO(text), dialect)])]
-    wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    if name.endswith(".xls"):
+        raise FileFormatError("File .xls (Excel 97-2003) chưa được hỗ trợ - hãy mở bằng Excel và lưu lại dạng .xlsx.")
+    if name.endswith(".pdf") or data[:4] == b"%PDF":
+        raise FileFormatError("Đây là file PDF - hãy dùng mục 'AI đọc ảnh chụp / PDF báo cáo tài chính'.")
+    if name.endswith((".xlsx", ".xlsm")) and data[:2] != b"PK":
+        raise FileFormatError("File không phải Excel .xlsx hợp lệ - hãy mở bằng Excel và lưu lại dạng .xlsx.")
+    if name.endswith((".csv", ".txt")) or data[:2] != b"PK":
+        text = _decode_text(data)
+        if not text.strip():
+            raise FileFormatError("File rỗng.")
+        sample = text[:4096]
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            delim = dialect.delimiter
+        except csv.Error:
+            delim = max(",;\t", key=sample.count)
+        try:
+            rows = [row for row in csv.reader(io.StringIO(text), delimiter=delim)]
+        except csv.Error as exc:
+            raise FileFormatError(f"Không đọc được file CSV: {exc}") from exc
+        rows = [r for r in rows if any(str(c).strip() for c in r)]
+        return [("csv", rows, detect_convention(rows, delim))]
+    try:
+        wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    except (zipfile.BadZipFile, KeyError, InvalidFileException, OSError) as exc:
+        raise FileFormatError("Không đọc được file Excel - hãy lưu lại dạng .xlsx hoặc CSV UTF-8.") from exc
     out = []
     for ws in wb.worksheets:
         rows = [list(r) for r in ws.iter_rows(values_only=True)]
         rows = [r for r in rows if any(c not in (None, "") for c in r)]
         if rows:
-            out.append((ws.title, rows))
+            out.append((ws.title, rows, detect_convention(rows)))
     return out
 
 
+def _plain(text: str) -> str:
+    s = unicodedata.normalize("NFD", text).replace("đ", "d").replace("Đ", "D")
+    return "".join(ch for ch in s if unicodedata.category(ch) != "Mn").lower()
+
+
+_MULT_BY_ZEROS = {1: (1e-6, "nghin dong"), 2: (1e-3, "trieu dong"), 3: (1.0, "ty dong")}
+
+
 def _detect_unit(grid: list[list]) -> tuple[float | None, str | None]:
+    """Tìm dòng 'Đơn vị: ...' (kể cả dạng '1.000 đồng', '1.000.000 VND', 'Đơn vị tính (Triệu VND)')."""
     for row in grid[:40]:
         for c in row:
             if not isinstance(c, str):
                 continue
-            n = norm(c)
-            if "don vi" in n or "unit" in n or "dvt" in n:
-                for pat, mult in UNIT_PATTERNS:
-                    if pat in n:
-                        return mult, pat
+            n = _plain(c)
+            if not ("don vi" in n or "unit" in n or "dvt" in n):
+                continue
+            m = re.search(r"1(?:[.,\s]?000)+", c)
+            if m:
+                zeros = m.group(0).count("000")
+                if zeros in _MULT_BY_ZEROS:
+                    return _MULT_BY_ZEROS[zeros]
+            for pat, mult in UNIT_PATTERNS:
+                if pat in n:
+                    return mult, pat
     return None, None
 
 
-def _parse_grid(grid: list[list]) -> dict | None:
+def _row_years(row: list) -> dict[int, int]:
+    """Các cột năm của một dòng tiêu đề. Ô số chỉ được coi là năm khi MỌI ô số trong dòng đều giống năm
+    và các năm liền kề nhau (tránh nhầm dòng số liệu như 1.900, 2.000 thành năm)."""
+    nums = [c for c in row if isinstance(c, (int, float)) and not isinstance(c, bool)]
+    numeric_years = bool(nums) and all(1990 <= c <= 2100 and float(c).is_integer() for c in nums)
+    cols: dict[int, int] = {}
+    for j, c in enumerate(row):
+        if isinstance(c, (int, float)) and not isinstance(c, bool):
+            if numeric_years:
+                cols[j] = int(c)
+        elif (y := _year_of(c)) is not None:
+            cols[j] = y
+    ys = [cols[j] for j in sorted(cols)]
+    if len(ys) >= 2 and any(abs(b - a) > 3 for a, b in zip(ys, ys[1:])):
+        return {}
+    return cols
+
+
+def _parse_grid(grid: list[list], conv: str | None = None) -> dict | None:
     # 1) tìm dòng tiêu đề chứa ≥ 2 năm
     header_idx, year_cols = None, {}
     for i, row in enumerate(grid[:60]):
-        cols = {j: y for j, c in enumerate(row) if (y := _year_of(c))}
+        cols = _row_years(row)
         if len(cols) >= 2 or (len(cols) == 1 and len(grid) > 5):
             if len(cols) > len(year_cols):
                 header_idx, year_cols = i, cols
@@ -181,7 +292,7 @@ def _parse_grid(grid: list[list]) -> dict | None:
     lines = []
     for r in grid[header_idx + 1:]:
         label = next((str(c) for c in r[:first_year_col] if isinstance(c, str) and c.strip()), "")
-        vals = {y: _num(r[j]) if j < len(r) else None for j, y in cols.items()}
+        vals = {y: _num(r[j], conv) if j < len(r) else None for j, y in cols.items()}
         if not label or all(v is None for v in vals.values()):
             continue
         lines.append({"label": label, "norm": norm(label),
@@ -225,8 +336,9 @@ def _parse_grid(grid: list[list]) -> dict | None:
             mapped["_owner_capital"] = cap["values"]
     if len([f for f in fundamentals.REQUIRED_FIELDS if f in mapped]) < 2:
         return None
-    if unit_mult is None:
-        # đoán đơn vị theo độ lớn của Tổng tài sản / Doanh thu
+    unit_guessed = unit_mult is None
+    if unit_guessed:
+        # Không có dòng "Đơn vị": đoán theo độ lớn của Tổng tài sản / Doanh thu (cần người dùng xác nhận)
         ref = next((abs(v) for f in ("total_assets", "revenue", "equity") for v in (mapped.get(f) or {}).values() if v),
                    None)
         unit_mult, unit_name = ((1e-9, "dong (đoán)") if ref and ref > 1e10 else
@@ -252,22 +364,36 @@ def _parse_grid(grid: list[list]) -> dict | None:
         if any(row.get(f) is not None for f in fundamentals.REQUIRED_FIELDS):
             years.append(row)
     missing = [f for f, _, _ in fundamentals.MANUAL_FIELDS if not any(f in y for y in years)]
-    return {"years": years, "unit_detected": unit_name, "mapping": report, "missing_fields": missing}
+    return {"years": years, "unit_detected": unit_name, "unit_guessed": unit_guessed,
+            "mapping": report, "missing_fields": missing}
 
 
 def parse_financial_file(data: bytes, filename: str) -> dict:
     """Đọc file BCTC Excel/CSV → số liệu theo năm (tỷ đồng) để người dùng xem lại trước khi lưu."""
     best = None
-    for sheet, grid in _grids(data, filename):
-        for orientation, g in (("rows", grid), ("columns", [list(x) for x in zip(*grid)] if grid else [])):
-            res = _parse_grid(g)
+    quarterly = False
+    for sheet, grid, conv in _grids(data, filename):
+        if any(isinstance(c, str) and _QUARTER.search(c) for row in grid[:60] for c in row):
+            quarterly = True
+        transposed = [list(x) for x in zip(*grid)] if grid else []
+        for orientation, g in (("rows", grid), ("columns", transposed)):
+            res = _parse_grid(g, conv)
             if res and (best is None or len(res["mapping"]) > len(best["mapping"])):
-                best = {**res, "sheet": sheet, "orientation": orientation}
+                best = {**res, "sheet": sheet, "orientation": orientation, "number_format": conv}
     if best is None:
+        if quarterly:
+            raise ValueError("File chỉ có số liệu theo QUÝ / 6 tháng. Ứng dụng phân tích BCTC NĂM - hãy dùng báo cáo "
+                             "năm (hoặc cộng 4 quý cho các chỉ tiêu KQKD/lưu chuyển tiền, lấy số cuối Q4 cho bảng cân đối).")
         raise ValueError("Không nhận diện được cấu trúc BCTC trong file (cần cột năm và các dòng chỉ tiêu). "
                          "Hãy dùng file mẫu hoặc thử tính năng AI đọc file.")
     best["fields"] = [{"key": k, "label": label, "unit": unit} for k, label, unit in fundamentals.MANUAL_FIELDS]
     best["warnings"] = []
+    if best.get("unit_guessed"):
+        best["warnings"].append(f"Không tìm thấy dòng 'Đơn vị' trong file - đơn vị được ĐOÁN là "
+                                f"{best['unit_detected'].replace(' (đoán)', '')}. Hãy kiểm tra độ lớn số liệu và dùng "
+                                f"nút ×1000 / ÷1000 nếu cần.")
+    if quarterly:
+        best["warnings"].append("File có cả cột theo quý/6 tháng - các cột này đã được bỏ qua, chỉ lấy cột năm.")
     for y in best["years"]:
         if all(k in y for k in ("total_assets", "equity", "total_liabilities")):
             gap = abs(y["total_assets"] - y["equity"] - y["total_liabilities"])
@@ -279,7 +405,7 @@ def parse_financial_file(data: bytes, filename: str) -> dict:
 def grid_as_text(data: bytes, filename: str, max_rows: int = 250, max_cols: int = 16) -> str:
     """Chuyển nội dung file thành văn bản (CSV) để AI đọc khi định dạng quá lạ."""
     parts = []
-    for sheet, grid in _grids(data, filename):
+    for sheet, grid, _ in _grids(data, filename):
         buf = io.StringIO()
         w = csv.writer(buf)
         for r in grid[:max_rows]:
@@ -297,7 +423,15 @@ def financial_template(ticker: str | None = None) -> bytes:
     rows_existing = []
     if ticker:
         try:
-            rows_existing = fundamentals.get_financials(ticker)["rows"][-5:]
+            fin = fundamentals.get_financials(ticker)
+            src = fin["source"]
+            if src == "demo":
+                rows_existing = []  # không bao giờ điền sẵn số liệu DEMO bịa ra
+            elif "demo" in src:
+                rows_existing = [r for r in fin["rows"] if r["year"] in fin.get("manual_years", [])]
+            else:
+                rows_existing = fin["rows"]
+            rows_existing = rows_existing[-5:]
         except Exception:  # noqa: BLE001
             rows_existing = []
     years = [r["year"] for r in rows_existing] or list(range(date.today().year - 5, date.today().year))
@@ -378,7 +512,7 @@ def _parse_date(v) -> str | None:
 
 def parse_price_file(data: bytes, filename: str, default_ticker: str | None = None) -> list[tuple]:
     rows_out = []
-    for _, grid in _grids(data, filename):
+    for _, grid, conv in _grids(data, filename):
         header_idx, colmap = None, {}
         for i, row in enumerate(grid[:15]):
             cm = {}
@@ -400,11 +534,11 @@ def parse_price_file(data: bytes, filename: str, default_ticker: str | None = No
                 tk = (str(r[colmap["ticker"]]).strip().upper() if "ticker" in colmap and colmap["ticker"] < len(r)
                       else (default_ticker or "").upper())
                 d = _parse_date(r[colmap["date"]])
-                c = _num(r[colmap["close"]])
-                o = _num(r[colmap["open"]]) if "open" in colmap else c
-                h = _num(r[colmap["high"]]) if "high" in colmap else max(o or c, c)
-                lo = _num(r[colmap["low"]]) if "low" in colmap else min(o or c, c)
-                v = _num(r[colmap["volume"]]) if "volume" in colmap and colmap["volume"] < len(r) else 0
+                c = _num(r[colmap["close"]], conv)
+                o = _num(r[colmap["open"]], conv) if "open" in colmap else c
+                h = _num(r[colmap["high"]], conv) if "high" in colmap else max(o or c, c)
+                lo = _num(r[colmap["low"]], conv) if "low" in colmap else min(o or c, c)
+                v = _num(r[colmap["volume"]], conv) if "volume" in colmap and colmap["volume"] < len(r) else 0
             except (IndexError, TypeError, ValueError):
                 continue
             if not tk or not d or c is None:

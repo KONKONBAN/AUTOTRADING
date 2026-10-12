@@ -89,7 +89,7 @@ def system_view(ticker: str, start: str | None = None, end: str | None = None) -
     if len(df) < 60:
         return None
     t = technical.analyze(df)
-    return {"source": df.attrs.get("source"), "as_of": df.index[-1].strftime("%Y-%m-%d"),
+    return {"ticker": ticker.upper(), "source": df.attrs.get("source"), "as_of": df.index[-1].strftime("%Y-%m-%d"),
             "score": t["score"], "signal": t["signal"], "signal_code": t["signal_code"], "trend": t["trend"],
             "price": t["price"], "levels": t["levels"], "patterns": t["patterns"],
             "period_start": lookback_start.strftime("%Y-%m-%d") if lookback_start is not None else None}

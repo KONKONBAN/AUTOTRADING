@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { BookOpen, Bot, ChevronDown } from "lucide-react";
 import { api } from "../lib/api";
-import { Card, Loading, useAsync } from "../components/ui";
+import { Card, ErrorBox, Loading, useAsync } from "../components/ui";
 
 const TITLES: Record<string, string> = {
   quy_trinh_dau_tu: "Quy trình đầu tư cổ phiếu 4 bước",
@@ -30,7 +30,7 @@ export default function Knowledge() {
         </div>
         <Link to="/agent" className="btn primary"><Bot size={16} /> Hỏi AI để giải thích thêm</Link>
       </div>
-      {k.loading ? <Loading /> : (
+      {k.loading ? <Loading /> : k.error || !k.data ? <ErrorBox error={k.error ?? "Không có dữ liệu"} onRetry={k.reload} /> : (
         <div className="col" style={{ gap: 10 }}>
           {Object.entries(k.data.topics as Record<string, string>).map(([key, text]) => (
             <Card key={key}>

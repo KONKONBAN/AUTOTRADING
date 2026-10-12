@@ -114,7 +114,8 @@ def valuation(fin_rows: list[dict], ratios: list[dict], price: float, beta: floa
                 f"WACC {vn_pct(d['wacc'])}, g dài hạn {vn_pct(d['terminal_growth'], 0)}")
     else:
         d = None
-    g_eff = min(g_sust, re - 0.02)
+    # Mô hình vĩnh viễn (P/B hợp lý, DDM) phải dùng tăng trưởng DÀI HẠN, không suy ra từ re
+    g_eff = min(g_sust, TERMINAL_GROWTH)
     pb_fair = justified_pb(roe, re, g_eff)
     if pb_fair is not None:
         pb_fair = _clip(pb_fair, 0.3, 5.0)
@@ -122,8 +123,8 @@ def valuation(fin_rows: list[dict], ratios: list[dict], price: float, beta: floa
         add("P/B hợp lý theo ROE", pb_fair * bvps, 0.35 if financial else 0.15,
             f"P/B = (ROE − g)/(re − g) = {vn_num(pb_fair, 2)}x")
     payout = 1 - retention
-    if eps > 0 and re > g_sust:
-        pe_fair = _clip(max(payout, 0.25) * (1 + g_sust) / (re - g_sust), 5, 25)
+    if eps > 0 and re > g_eff:
+        pe_fair = _clip(max(payout, 0.25) * (1 + g_eff) / (re - g_eff), 5, 25)
         add("P/E hợp lý (Gordon)", pe_fair * eps, 0.15, f"P/E hợp lý {vn_num(pe_fair, 1)}x")
     if sector_pe and eps > 0:
         add("So sánh P/E ngành", sector_pe * eps, 0.2, f"P/E trung vị ngành {vn_num(sector_pe, 1)}x")

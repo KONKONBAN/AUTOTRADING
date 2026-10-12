@@ -37,6 +37,7 @@ class Settings:
     price_cache_ttl: int = int(os.getenv("PRICE_CACHE_TTL", "900"))
     paper_initial_cash: float = float(os.getenv("PAPER_INITIAL_CASH", "500000000"))
     allow_live_trading: bool = _bool("ALLOW_LIVE_TRADING", False)
+    autotrader_scheduler: bool = _bool("AUTOTRADER_SCHEDULER", True)
     db_path: Path = ROOT_DIR / os.getenv("DB_PATH", "backend/data/autotrading.sqlite3")
     frontend_dist: Path = ROOT_DIR / "frontend" / "dist"
 

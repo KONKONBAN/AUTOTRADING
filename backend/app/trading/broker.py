@@ -9,6 +9,7 @@ PaperBroker mô phỏng sát quy định Việt Nam:
 
 from __future__ import annotations
 
+import threading
 import time
 from abc import ABC, abstractmethod
 from datetime import date
@@ -24,6 +25,14 @@ from . import vn_rules
 
 class OrderError(ValueError):
     pass
+
+
+# Mọi thao tác đọc-ghi tiền mặt/lô cổ phiếu đi qua một khóa để hai lệnh đồng thời không ghi đè nhau
+_ORDER_LOCK = threading.RLock()
+
+
+def normalize_ticker(ticker: str) -> str:
+    return (ticker or "").strip().upper()
 
 
 def business_days_between(d1: date, d2: date) -> int:
@@ -71,12 +80,14 @@ class PaperBroker(BrokerBase):
 
     # ------------------------------------------------------------------ state
     def reset(self, initial_cash: float) -> None:
-        self.db.execute("DELETE FROM lots")
-        self.db.execute("DELETE FROM orders WHERE broker='paper'")
-        self.db.execute("DELETE FROM equity_history")
-        self.db.set_kv("paper_cash", float(initial_cash))
-        self.db.set_kv("paper_initial_cash", float(initial_cash))
-        self.db.set_kv("paper_realized_pnl", 0.0)
+        with _ORDER_LOCK:
+            self.db.execute("DELETE FROM lots")
+            self.db.execute("DELETE FROM orders WHERE broker='paper'")
+            self.db.execute("DELETE FROM equity_history")
+            self.db.execute("UPDATE proposals SET status='expired' WHERE status IN ('pending', 'executing')")
+            self.db.set_kv("paper_cash", float(initial_cash))
+            self.db.set_kv("paper_initial_cash", float(initial_cash))
+            self.db.set_kv("paper_realized_pnl", 0.0)
 
     @property
     def cash(self) -> float:
@@ -158,15 +169,41 @@ class PaperBroker(BrokerBase):
     def place_order(self, ticker: str, side: str, quantity: int, price: float | None = None,
                     source: str = "manual", reason: str = "", stop_loss: float | None = None,
                     take_profit: float | None = None) -> dict:
-        """Khớp lệnh ngay tại giá chỉ định (hoặc giá đóng cửa gần nhất) - mô phỏng lệnh LO khớp."""
-        ticker, side = ticker.upper(), side.upper()
+        with _ORDER_LOCK:
+            return self._place_order(ticker, side, quantity, price, source, reason, stop_loss, take_profit)
+
+    def _place_order(self, ticker: str, side: str, quantity: int, price: float | None, source: str,
+                     reason: str, stop_loss: float | None, take_profit: float | None) -> dict:
+        """Mô phỏng lệnh LO: `price` là GIÁ GIỚI HẠN (bỏ trống = lệnh thị trường).
+
+        Lệnh chỉ khớp khi thị trường cho phép (mua: giới hạn ≥ giá hiện tại; bán: giới hạn ≤ giá hiện tại)
+        và luôn khớp tại GIÁ THỊ TRƯỜNG hiện tại - không bao giờ khớp ở mức giá thị trường chưa từng đạt.
+        """
+        ticker, side = normalize_ticker(ticker), side.upper().strip()
+        if not ticker:
+            raise OrderError("Thiếu mã cổ phiếu")
+        if ticker not in universe.UNIVERSE and providers._imported_history(ticker) is None:  # noqa: SLF001
+            raise OrderError(f"Mã {ticker} không có trong danh sách theo dõi và chưa có dữ liệu giá nhập - "
+                             "kiểm tra lại mã (có thể gõ nhầm).")
         hist = providers.get_history(ticker, days=60)
+        if not providers.is_tradeable_source(hist.attrs.get("source")):
+            raise OrderError(f"Chưa có giá thật cho {ticker} (đang dùng dữ liệu DEMO) - không thể đặt lệnh. "
+                             "Hãy kiểm tra kết nối nguồn dữ liệu hoặc tải file giá lên.")
         last_close = float(hist["close"].iloc[-1])
         reference = float(hist["close"].iloc[-2]) if len(hist) > 1 else last_close
         ex = universe.info(ticker)["exchange"]
-        price = vn_rules.round_to_tick(price or last_close, ex)
         quantity = int(quantity)
-        self._validate(ticker, side, quantity, price, reference)
+        if price is not None:
+            limit = vn_rules.round_to_tick(float(price), ex)
+            self._validate(ticker, side, quantity, limit, reference)
+            if side == "BUY" and limit < last_close:
+                raise OrderError(f"Giá mua {vn_num(limit)} thấp hơn giá thị trường {vn_num(last_close)} - lệnh LO "
+                                 "sẽ chưa khớp. Hãy đặt giá ≥ giá thị trường hoặc chờ giá về vùng mua.")
+            if side == "SELL" and limit > last_close:
+                raise OrderError(f"Giá bán {vn_num(limit)} cao hơn giá thị trường {vn_num(last_close)} - lệnh LO "
+                                 "sẽ chưa khớp.")
+        price = last_close
+        self._validate(ticker, side, quantity, price, price)  # khớp tại giá thị trường (luôn trong biên độ)
         value = price * quantity
         costs = vn_rules.trade_costs(side, value, self.fee_rate)
         today = date.today().isoformat()

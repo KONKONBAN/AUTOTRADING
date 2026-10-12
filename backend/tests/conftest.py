@@ -7,6 +7,7 @@ from pathlib import Path
 _tmp = tempfile.mkdtemp(prefix="autotrading-test-")
 os.environ["DB_PATH"] = str(Path(_tmp) / "test.sqlite3")
 os.environ["DATA_MODE"] = "demo"
+os.environ["AUTOTRADER_SCHEDULER"] = "false"
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
 os.environ.pop("ANTHROPIC_PROFILE", None)

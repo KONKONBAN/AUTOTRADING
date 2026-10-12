@@ -63,11 +63,16 @@ def analyze(df: pd.DataFrame, window: int = 120) -> dict:
     t = np.arange(len(close))
     b_full, a_full = np.polyfit(t, np.log(close.values), 1)
 
-    score = 0.0
-    score += 1.5 if last["b"] > 0 else -1.5
-    score += 1.0 if (last["db"] or 0) > 0 else -1.0
-    score += 1.0 if price > ma50 else -1.0
-    score += 1.0 if (not np.isnan(ma200) and price > ma200) else -1.0
+    b, db = last["b"], last["db"]
+    score = 0.0  # thành phần nào thiếu dữ liệu (lịch sử ngắn) thì tính 0, không coi là tín hiệu xấu
+    if not pd.isna(b):
+        score += 1.5 if b > 0 else -1.5
+    if not pd.isna(db):
+        score += 1.0 if db > 0 else -1.0
+    if not pd.isna(ma50):
+        score += 1.0 if price > ma50 else -1.0
+    if not pd.isna(ma200):
+        score += 1.0 if price > ma200 else -1.0
     score += -1.0 if dist >= 6 else (-0.5 if dist >= 4 else 0.5)
     uz = last["u_z"] if not np.isnan(last["u_z"]) else 0.0
     score += -0.5 if uz > 2 else (0.5 if uz < -2 else 0)
@@ -86,9 +91,9 @@ def analyze(df: pd.DataFrame, window: int = 120) -> dict:
     notes = []
     if dist >= 5:
         notes.append(f"{dist} ngày phân phối trong 25 phiên: thị trường chung có dấu hiệu phân phối → hạn chế mua mới.")
-    if last["b"] > 0 and (last["db"] or 0) < 0:
+    if not pd.isna(b) and not pd.isna(db) and b > 0 and db < 0:
         notes.append("Xu hướng tăng đang chậm lại (độ dốc b giảm).")
-    if last["b"] < 0 and (last["db"] or 0) > 0:
+    if not pd.isna(b) and not pd.isna(db) and b < 0 and db > 0:
         notes.append("Xu hướng giảm đang yếu đi (độ dốc b tăng) - theo dõi điểm đảo chiều.")
     if uz > 2:
         notes.append("Giá lệch xa trên đường xu hướng (u cao) - thị trường quá nóng.")
@@ -99,10 +104,11 @@ def analyze(df: pd.DataFrame, window: int = 120) -> dict:
     return {
         "price": price, "change_pct": float(close.pct_change().iloc[-1]),
         "regime": regime, "score": round(score, 2), "recommended_exposure": exposure,
-        "trend_slope_b": float(last["b"]), "trend_annualized": float(last["trend_annual"]),
-        "slope_change_db": float(last["db"]) if not np.isnan(last["db"]) else None,
-        "deviation_u": float(last["u"]), "deviation_z": float(uz),
-        "ma50": float(ma50), "ma200": float(ma200) if not np.isnan(ma200) else None,
+        "trend_slope_b": None if pd.isna(b) else float(b),
+        "trend_annualized": None if pd.isna(last["trend_annual"]) else float(last["trend_annual"]),
+        "slope_change_db": None if pd.isna(db) else float(db),
+        "deviation_u": None if pd.isna(last["u"]) else float(last["u"]), "deviation_z": float(uz),
+        "ma50": None if pd.isna(ma50) else float(ma50), "ma200": None if pd.isna(ma200) else float(ma200),
         "rsi": rsi, "distribution_days": dist,
         "long_run": {"a": float(a_full), "b": float(b_full),
                      "cagr": float(np.exp(b_full * 252) - 1)},

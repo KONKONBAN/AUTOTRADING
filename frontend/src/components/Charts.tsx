@@ -32,8 +32,10 @@ function baseOptions(height: number) {
 
 const C = { ma20: "#f59e0b", ma50: "#3b82f6", ma200: "#a855f7", bb: "#64748b" };
 
-export function PriceChart({ data, overlays, height = 420, lines = [], showRsi = true, showMacd = true }: {
+export function PriceChart({ data, overlays, height = 420, lines = [], showRsi = true, showMacd = true, fit = false }: {
   data: ChartData; overlays: Overlays; height?: number; lines?: PriceLine[]; showRsi?: boolean; showMacd?: boolean;
+  /** true: hiển thị trọn khoảng thời gian đã chọn; false: chỉ ~180 phiên gần nhất (có thể cuộn) */
+  fit?: boolean;
 }) {
   const { theme } = useTheme();
   const mainRef = useRef<HTMLDivElement>(null);
@@ -46,6 +48,13 @@ export function PriceChart({ data, overlays, height = 420, lines = [], showRsi =
     const up = cssVar("--up");
     const down = cssVar("--down");
     const charts: IChartApi[] = [];
+    // Các khung phụ (RSI, MACD) dùng CÙNG trục thời gian với nến: chèn điểm trống (whitespace) cho những
+    // phiên chưa có giá trị chỉ báo, để đồng bộ theo chỉ số logic không bị lệch phiên.
+    const times = data.candles.map((c) => c.time);
+    const pad = <T extends { time: string }>(pts: T[]) => {
+      const m = new Map(pts.map((p) => [p.time, p]));
+      return times.map((t) => m.get(t) ?? { time: t });
+    };
     const main = createChart(mainRef.current, baseOptions(height));
     charts.push(main);
     const candle = main.addCandlestickSeries({ upColor: up, downColor: down, borderVisible: false, wickUpColor: up, wickDownColor: down });
@@ -83,17 +92,17 @@ export function PriceChart({ data, overlays, height = 420, lines = [], showRsi =
     };
     if (showRsi) sub(rsiRef.current, (ch) => {
       const s = ch.addLineSeries({ color: "#8b5cf6", lineWidth: 2, priceLineVisible: false });
-      s.setData(data.rsi as any);
+      s.setData(pad(data.rsi) as any);
       s.createPriceLine({ price: 70, color: down, lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: "" });
       s.createPriceLine({ price: 30, color: up, lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: "" });
     });
     if (showMacd) sub(macdRef.current, (ch) => {
       const h = ch.addHistogramSeries({ priceLineVisible: false });
-      h.setData(data.macd_hist.map((p) => ({ ...p, color: p.value >= 0 ? up + "99" : down + "99" })) as any);
+      h.setData(pad(data.macd_hist.map((p) => ({ ...p, color: p.value >= 0 ? up + "99" : down + "99" }))) as any);
       const m = ch.addLineSeries({ color: "#0ea5e9", lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-      m.setData(data.macd as any);
+      m.setData(pad(data.macd) as any);
       const sg = ch.addLineSeries({ color: "#f59e0b", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-      sg.setData(data.macd_signal as any);
+      sg.setData(pad(data.macd_signal) as any);
     });
     // đồng bộ cuộn/zoom giữa các biểu đồ
     let syncing = false;
@@ -106,9 +115,9 @@ export function PriceChart({ data, overlays, height = 420, lines = [], showRsi =
       })
     );
     const n = data.candles.length;
-    main.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 180), to: n + 3 });
+    main.timeScale().setVisibleLogicalRange({ from: fit ? 0 : Math.max(0, n - 180), to: n + 3 });
     return () => charts.forEach((c) => c.remove());
-  }, [data, overlays, height, lines, showRsi, showMacd, theme]);
+  }, [data, overlays, height, lines, showRsi, showMacd, fit, theme]);
 
   const last = data.candles[data.candles.length - 1];
   const L = legend ?? (last ? { o: last.open, h: last.high, l: last.low, c: last.close, time: last.time } : null);

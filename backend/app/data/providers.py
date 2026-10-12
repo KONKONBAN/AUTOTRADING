@@ -10,12 +10,11 @@ Mọi kết quả đều kèm trường `source` để giao diện hiển thị 
 
 from __future__ import annotations
 
-import csv
 import hashlib
-import io
 import logging
 import time
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 
 import httpx
 import numpy as np
@@ -23,7 +22,6 @@ import pandas as pd
 
 from ..config import settings
 from ..db import get_db
-from ..trading.vn_rules import round_to_tick
 from . import universe
 
 log = logging.getLogger(__name__)
@@ -119,13 +117,17 @@ def _fetch_cafef(ticker: str, start: date, end: date) -> pd.DataFrame:
     rows = ((js.get("Data") or {}).get("Data")) or []
     if not rows:
         raise DataUnavailable(f"CafeF không có dữ liệu cho {ticker}")
+    raw_close = pd.to_numeric(pd.Series([r.get("GiaDongCua") for r in rows]), errors="coerce")
+    adj_close = pd.to_numeric(pd.Series([r.get("GiaDieuChinh") for r in rows]), errors="coerce").fillna(raw_close)
+    factor = (adj_close / raw_close).replace([np.inf, -np.inf], np.nan).fillna(1.0)  # hệ số điều chỉnh (cổ tức, chia tách)
     df = pd.DataFrame({
         "date": pd.to_datetime([r["Ngay"] for r in rows], dayfirst=True),
-        "open": [r.get("GiaMoCua") for r in rows], "high": [r.get("GiaCaoNhat") for r in rows],
-        "low": [r.get("GiaThapNhat") for r in rows],
-        "close": [r.get("GiaDieuChinh") or r.get("GiaDongCua") for r in rows],
+        "open": pd.to_numeric(pd.Series([r.get("GiaMoCua") for r in rows]), errors="coerce") * factor,
+        "high": pd.to_numeric(pd.Series([r.get("GiaCaoNhat") for r in rows]), errors="coerce") * factor,
+        "low": pd.to_numeric(pd.Series([r.get("GiaThapNhat") for r in rows]), errors="coerce") * factor,
+        "close": adj_close,
         "volume": [r.get("KhoiLuongKhopLenh") or 0 for r in rows],
-    })
+    }).sort_values("date")  # CafeF trả về mới nhất trước
     if ticker != "VNINDEX" and df["close"].median() < 1_000:
         df[["open", "high", "low", "close"]] *= 1_000
     return df
@@ -210,15 +212,18 @@ def _seed(text: str) -> int:
     return int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
 
 
-def _business_days(end: date, n: int) -> pd.DatetimeIndex:
-    return pd.bdate_range(end=pd.Timestamp(end), periods=n)
+# Chuỗi DEMO được sinh một lần trên một lưới ngày cố định (2018 → 2036): mỗi phiên có một mức giá
+# cố định, ngày mới chỉ nối thêm biến động mới (không "trôi" lịch sử), giá tại ngày neo = giá tham khảo.
+DEMO_EPOCH = date(2018, 1, 1)
+DEMO_HORIZON = date(2036, 12, 31)
+DEMO_ANCHOR = pd.Timestamp(2026, 6, 30)
+_DEMO_INDEX = pd.bdate_range(DEMO_EPOCH, DEMO_HORIZON)
 
 
-DEMO_DAYS = 1500  # luôn sinh cùng một chuỗi dài rồi cắt đuôi → nhất quán giữa các lần gọi
-
-
-def _market_returns(n: int) -> np.ndarray:
-    rng = np.random.default_rng(_seed("VNINDEX-demo-6"))
+@lru_cache(maxsize=1)
+def _market_returns() -> np.ndarray:
+    n = len(_DEMO_INDEX)
+    rng = np.random.default_rng(_seed("VNINDEX-demo-epoch-16"))
     rets = np.empty(n)
     i = 0
     while i < n:
@@ -227,93 +232,61 @@ def _market_returns(n: int) -> np.ndarray:
         vol = rng.uniform(0.12, 0.24) / np.sqrt(252)
         rets[i:i + length] = rng.normal(regime_drift, vol, size=min(length, n - i))
         i += length
-    return rets[-n:] if len(rets) > n else rets
+    return rets
 
 
-def _demo_history(ticker: str, n: int = 750, end: date | None = None) -> pd.DataFrame:
-    end = end or date.today()
-    total = max(n, DEMO_DAYS)
-    idx = _business_days(end, total)
+def _round_ticks(prices: np.ndarray, exchange: str) -> np.ndarray:
+    if exchange.upper() != "HOSE":
+        step = np.full_like(prices, 100.0)
+    else:
+        step = np.where(prices < 10_000, 10.0, np.where(prices < 50_000, 50.0, 100.0))
+    return np.round(prices / step) * step
+
+
+@lru_cache(maxsize=256)
+def _demo_full(ticker: str) -> pd.DataFrame:
     meta = universe.info(ticker)
-    mkt = _market_returns(total)
+    mkt = _market_returns()
+    n = len(mkt)
     if ticker == "VNINDEX":
-        rets = mkt
-        base = meta["reference_price"]
+        rets = mkt.copy()
     else:
         rng = np.random.default_rng(_seed(ticker))
         beta = rng.uniform(0.6, 1.4)
         alpha = rng.normal(0.03, 0.08) / 252
         idio_vol = rng.uniform(0.12, 0.28) / np.sqrt(252)
-        rets = alpha + beta * mkt + rng.normal(0, idio_vol, total)
-        base = meta["reference_price"]
-    n_out = n
-    n = total
+        rets = alpha + beta * mkt + rng.normal(0, idio_vol, n)
     rets = np.clip(rets, -0.069, 0.069)  # biên độ HOSE ±7%
     path = np.exp(np.cumsum(rets))
-    close = base * path / path[-1]  # neo giá cuối ≈ giá tham khảo
+    anchor_pos = max(int(_DEMO_INDEX.searchsorted(DEMO_ANCHOR, side="right")) - 1, 0)
+    close = meta["reference_price"] * path / path[anchor_pos]
     rng = np.random.default_rng(_seed(ticker + "-ohlc"))
-    open_ = np.r_[close[0], close[:-1]] * (1 + rng.normal(0, 0.004, n))
-    spread = np.abs(rng.normal(0, 0.006, n)) + np.abs(rets) * 0.25
     prev_close = np.r_[close[0], close[:-1]]
+    open_ = prev_close * (1 + rng.normal(0, 0.004, n))
+    spread = np.abs(rng.normal(0, 0.006, n)) + np.abs(rets) * 0.25
     high = np.minimum(np.maximum(open_, close) * (1 + spread), prev_close * 1.069)
     low = np.maximum(np.minimum(open_, close) * (1 - spread), prev_close * 0.931)
     vol_base = 5e5 if ticker == "VNINDEX" else rng.uniform(1e6, 2e7)
-    volume = vol_base * np.exp(rng.normal(0, 0.35, n)) * (1 + 15 * np.abs(rets))
-    df = pd.DataFrame({"date": idx, "open": open_, "high": high, "low": low,
-                       "close": close, "volume": volume.round()}).tail(n_out).reset_index(drop=True)
-    if ticker != "VNINDEX":
-        ex = meta["exchange"]
-        for col in ("open", "high", "low", "close"):
-            df[col] = [round_to_tick(p, ex) for p in df[col]]
-        df["high"] = df[["open", "high", "close"]].max(axis=1)
-        df["low"] = df[["open", "low", "close"]].min(axis=1)
+    volume = (vol_base * np.exp(rng.normal(0, 0.35, n)) * (1 + 15 * np.abs(rets))).round()
+    if ticker == "VNINDEX":
+        open_, high, low, close = (np.round(x, 2) for x in (open_, high, low, close))
     else:
-        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].round(2)
-    return df
+        open_, high, low, close = (_round_ticks(x, meta["exchange"]) for x in (open_, high, low, close))
+        high = np.maximum.reduce([open_, high, close])
+        low = np.minimum.reduce([open_, low, close])
+    return pd.DataFrame({"date": _DEMO_INDEX, "open": open_, "high": high, "low": low,
+                         "close": close, "volume": volume})
+
+
+def _demo_history(ticker: str, n: int = 750, end: date | None = None) -> pd.DataFrame:
+    end = pd.Timestamp(end or date.today())
+    full = _demo_full(ticker.upper())
+    return full[full["date"] <= end].tail(n).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
 # Imported data (CSV)
 # ---------------------------------------------------------------------------
-def import_csv(text: str) -> dict:
-    """Nhập dữ liệu giá từ CSV.
-
-    Hỗ trợ định dạng Amibroker/CafeF/MetaStock:  <Ticker>,<DTYYYYMMDD>,<Open>,<High>,<Low>,<Close>,<Volume>
-    và định dạng có header: ticker,date,open,high,low,close,volume (date dạng YYYY-MM-DD).
-    """
-    reader = csv.reader(io.StringIO(text.strip()))
-    rows, counts = [], {}
-    for rec in reader:
-        if not rec or len(rec) < 6:
-            continue
-        head = rec[0].strip().strip("<>").lower()
-        if head in {"ticker", "symbol", "mã"}:
-            continue
-        try:
-            ticker = rec[0].strip().upper()
-            raw_date = rec[1].strip()
-            d = (datetime.strptime(raw_date, "%Y%m%d") if raw_date.isdigit()
-                 else datetime.fromisoformat(raw_date[:10])).date().isoformat()
-            o, h, l, c = (float(x) for x in rec[2:6])
-            v = float(rec[6]) if len(rec) > 6 and rec[6].strip() else 0.0
-        except (ValueError, IndexError):
-            continue
-        if ticker != "VNINDEX" and c < 1_000:  # dữ liệu đơn vị nghìn đồng
-            o, h, l, c = (x * 1_000 for x in (o, h, l, c))
-        rows.append((ticker, d, o, h, l, c, v))
-        counts[ticker] = counts.get(ticker, 0) + 1
-    if not rows:
-        raise ValueError("Không đọc được dòng dữ liệu hợp lệ nào trong file CSV.")
-    db = get_db()
-    with db._lock:  # noqa: SLF001 - ghi hàng loạt trong 1 transaction
-        db._conn.executemany(
-            "INSERT OR REPLACE INTO imported_prices(ticker,date,open,high,low,close,volume) "
-            "VALUES(?,?,?,?,?,?,?)", rows)
-        db._conn.commit()
-    db.execute("DELETE FROM cache WHERE key LIKE 'hist:%'")
-    return {"rows": len(rows), "tickers": counts}
-
-
 def _imported_history(ticker: str) -> pd.DataFrame | None:
     rows = get_db().query(
         "SELECT date, open, high, low, close, volume FROM imported_prices WHERE ticker=? ORDER BY date",
@@ -336,38 +309,53 @@ def _finalize(df: pd.DataFrame, source: str) -> pd.DataFrame:
     return df
 
 
+CACHE_DAYS = 1500  # luôn lấy & cache một chuỗi dài cho mỗi mã, các cửa sổ ngắn hơn cắt đuôi từ đó
+DEMO_FALLBACK_TTL = 60  # DEMO dự phòng (khi nguồn thật lỗi) chỉ cache ngắn để nhanh chóng thử lại nguồn thật
+
+
 def get_history(ticker: str, days: int = 750) -> pd.DataFrame:
     """Lịch sử giá ngày (OHLCV, đơn vị VND). `df.attrs['source']` cho biết nguồn dữ liệu."""
     ticker = ticker.upper().strip()
     db = get_db()
-    key = f"hist:{ticker}:{days}:{settings.data_mode}"
+    fetch_days = max(days, CACHE_DAYS)
+    key = f"hist:{ticker}:{fetch_days}:{settings.data_mode}"
     cached = db.cache_get(key)
     if cached:
         df = pd.DataFrame(cached["rows"])
         df["date"] = pd.to_datetime(df["date"])
-        return _finalize(df, cached["source"])
+        return _finalize(df.tail(days), cached["source"])
 
     df, source = None, None
     imported = _imported_history(ticker)
     if imported is not None:
-        df, source = imported.tail(days), SOURCE_IMPORTED
+        df, source = imported, SOURCE_IMPORTED
     elif settings.data_mode in {"auto", "live"}:
         end = date.today()
-        start = end - timedelta(days=int(days * 1.5))
+        start = end - timedelta(days=int(fetch_days * 1.5))
         try:
             df, source, _ = fetch_live(ticker, start, end)
         except DataUnavailable:
             if settings.data_mode == "live":
                 raise
     if df is None:
-        df, source = _demo_history(ticker, n=days), SOURCE_DEMO
+        df, source = _demo_history(ticker, n=fetch_days), SOURCE_DEMO
 
-    df = df.tail(days).reset_index(drop=True)  # mọi nguồn đều có cột "date"
-    ttl = settings.price_cache_ttl if source != SOURCE_DEMO else 3600
+    # sắp xếp TRƯỚC khi cắt đuôi (một số nguồn trả về mới nhất trước)
+    df = (df.dropna(subset=["close"]).sort_values("date").drop_duplicates("date", keep="last")
+          .tail(fetch_days).reset_index(drop=True))
+    if source != SOURCE_DEMO:
+        ttl = settings.price_cache_ttl
+    else:
+        ttl = 3600 if settings.data_mode == "demo" else DEMO_FALLBACK_TTL
     records = [{**r, "date": pd.Timestamp(r["date"]).strftime("%Y-%m-%d")}
                for r in df[["date", "open", "high", "low", "close", "volume"]].to_dict("records")]
     db.cache_set(key, {"source": source, "rows": records}, ttl)
-    return _finalize(df, source)
+    return _finalize(df.tail(days), source)
+
+
+def is_tradeable_source(source: str | None) -> bool:
+    """Chỉ cho phép đặt lệnh trên giá DEMO khi người dùng chủ động chọn DATA_MODE=demo."""
+    return source != SOURCE_DEMO or settings.data_mode == "demo"
 
 
 def latest_price(ticker: str) -> float:

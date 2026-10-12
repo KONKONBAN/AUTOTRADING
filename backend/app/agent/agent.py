@@ -49,11 +49,37 @@ Nguyên tắc làm việc:
 
 
 def _system() -> list[dict]:
+    # LƯU Ý: system prompt phải giữ nguyên byte-by-byte trong suốt một phiên (cache + thinking blocks được
+    # gắn với phần đầu hội thoại). Thông tin thay đổi theo ngày (ngày hiện tại) được gửi trong lượt hỏi mới.
     return [
         {"type": "text", "text": SYSTEM_ROLE + knowledge.full_text(), "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": f"Hôm nay là {date.today():%d/%m/%Y}. Danh sách mã theo dõi: "
-                                 f"{', '.join(universe.UNIVERSE)}. Các ngành: {', '.join(universe.sectors())}."},
+        {"type": "text", "text": f"Danh sách mã theo dõi: {', '.join(universe.UNIVERSE)}. "
+                                 f"Các ngành: {', '.join(universe.sectors())}."},
     ]
+
+
+def _as_blocks(content) -> list[dict]:
+    return [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+
+
+def _close_dangling_tool_uses(messages: list) -> None:
+    """Lượt assistant cuối có tool_use chưa có tool_result (bị cắt do max_tokens…) → thêm kết quả lỗi,
+    nếu không mọi lượt hỏi sau của phiên sẽ bị API từ chối."""
+    if not messages or messages[-1]["role"] != "assistant" or not isinstance(messages[-1]["content"], list):
+        return
+    ids = [b["id"] for b in messages[-1]["content"] if b.get("type") == "tool_use"]
+    if ids:
+        messages.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": i, "is_error": True,
+             "content": "Không thực thi: câu trả lời bị cắt trước khi công cụ được chạy."} for i in ids]})
+
+
+def _append_user(messages: list, blocks: list[dict]) -> None:
+    """Thêm lượt user mới; nếu lượt cuối đã là user (tool_result còn treo) thì gộp vào để không có 2 lượt user liền nhau."""
+    if messages and messages[-1]["role"] == "user":
+        messages[-1] = {"role": "user", "content": _as_blocks(messages[-1]["content"]) + blocks}
+    else:
+        messages.append({"role": "user", "content": blocks})
 
 
 # ------------------------------------------------------------------ sessions
@@ -94,7 +120,7 @@ def transcript(session_id: str) -> list[dict]:
         if isinstance(content, str):
             out.append({"role": m["role"], "text": content})
             continue
-        texts = [b.get("text", "") for b in content if b.get("type") == "text"]
+        texts = [re.sub(r"^\[Ngày hiện tại: [^\]]*\]\n", "", b.get("text", "")) for b in content if b.get("type") == "text"]
         tool_uses = [{"name": b["name"], "input": b.get("input")} for b in content if b.get("type") == "tool_use"]
         files = sum(1 for b in content if b.get("type") in {"image", "document"})
         if m["role"] == "user" and all(b.get("type") == "tool_result" for b in content):
@@ -113,9 +139,11 @@ def chat(message: str, session_id: str | None = None,
         return offline_chat(message, session_id)
     session = _load(session_id)
     messages: list = session["messages"] if session else []
+    _close_dangling_tool_uses(messages)  # phiên cũ có thể kết thúc bằng tool_use chưa có kết quả
     user_content: list[dict] = [llm.file_block(d, mt) for d, mt in (attachments or [])]
-    user_content.append({"type": "text", "text": message})
-    messages.append({"role": "user", "content": user_content})
+    user_content.append({"type": "text", "text": f"[Ngày hiện tại: {date.today():%d/%m/%Y}]\n{message}"})
+    n_before = len(messages)
+    _append_user(messages, user_content)
     title = (message[:60] + "…") if len(message) > 60 else message
 
     client = llm.get_client()
@@ -139,7 +167,10 @@ def chat(message: str, session_id: str | None = None,
 
         if response.stop_reason == "refusal":
             final_text = "Xin lỗi, tôi không thể hỗ trợ yêu cầu này."
-            messages.pop() if messages and messages[-1]["role"] == "user" and not tool_log else None
+            if not tool_log and len(messages) == n_before + 1:
+                messages.pop()  # bỏ câu hỏi bị từ chối để phiên vẫn tiếp tục được
+            else:
+                messages.append({"role": "assistant", "content": [{"type": "text", "text": final_text}]})
             break
         content = [b.to_dict(exclude_none=True) for b in response.content if b.type != "fallback"]
         messages.append({"role": "assistant", "content": content})
@@ -164,6 +195,7 @@ def chat(message: str, session_id: str | None = None,
     else:
         final_text += "\n\n_(Đã dừng sau nhiều bước phân tích - hãy hỏi cụ thể hơn.)_"
 
+    _close_dangling_tool_uses(messages)
     _save(session_id, messages, title if not session else None)
     return {"session_id": session_id, "reply": final_text, "tools": tool_log, "proposals": proposals}
 

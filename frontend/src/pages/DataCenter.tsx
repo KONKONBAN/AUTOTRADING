@@ -211,8 +211,19 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
   const editExisting = () => {
     if (!fin.data) return;
     const keys = (fields.data ?? []).map((f: any) => f.key);
-    setDraft(fin.data.rows.map((r: any) => Object.fromEntries([["year", r.year], ...keys.map((k: string) => [k, r[k] ?? null])])));
-    setMeta({ method: "Chỉnh sửa số liệu hiện có", warnings: [] });
+    const src: string = fin.data.source;
+    // không bao giờ nạp số liệu DEMO bịa ra vào bản nháp (sẽ thành "nhập tay" khi lưu)
+    const real = src === "demo" ? [] : src.includes("demo")
+      ? fin.data.rows.filter((r: any) => fin.data.manual_years.includes(r.year)) : fin.data.rows;
+    const rows = real.length ? real : [{ year: new Date().getFullYear() - 1 }];
+    setDraft(rows.map((r: any) => Object.fromEntries([["year", r.year], ...keys.map((k: string) => [k, r[k] ?? null])])));
+    setMeta({ method: real.length ? "Chỉnh sửa số liệu hiện có" : "Nhập tay số liệu mới", warnings: [] });
+  };
+  const MONEY_KEYS_EXCLUDED = new Set(["year", "shares", "dps"]);
+  const rescale = (factor: number) => {
+    if (!draft) return;
+    setDraft(draft.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) =>
+      [k, MONEY_KEYS_EXCLUDED.has(k) || typeof v !== "number" ? v : v * factor]))));
   };
   const save = async () => {
     if (!draft) return;
@@ -270,7 +281,11 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
       {draft && fields.data && (
         <Card title={`Xem lại & chỉnh sửa trước khi lưu · ${meta?.method ?? ""}`} icon={<Save size={16} />}
           hint={[meta?.company, meta?.report_type, meta?.unit && `Đơn vị gốc: ${meta.unit} → quy đổi tỷ đồng`].filter(Boolean).join(" · ")}
-          actions={<><button className="btn ghost" onClick={() => setDraft(null)}>Hủy</button><button className="btn primary" onClick={save}><Save size={15} /> Lưu vào hệ thống</button></>}>
+          actions={<>
+            <button className="btn sm" title="Số liệu đang nhỏ hơn thực tế 1000 lần" onClick={() => rescale(1000)}>×1000</button>
+            <button className="btn sm" title="Số liệu đang lớn hơn thực tế 1000 lần" onClick={() => rescale(0.001)}>÷1000</button>
+            <button className="btn ghost" onClick={() => setDraft(null)}>Hủy</button>
+            <button className="btn primary" onClick={save}><Save size={15} /> Lưu vào hệ thống</button></>}>
           <div className="col" style={{ gap: 10 }}>
             {meta?.warnings?.map((w: string, i: number) => <Alert key={i} kind="warn">{w}</Alert>)}
             {meta?.missing?.length > 0 && <div className="small subtle">Chưa tìm thấy: {meta.missing.map((k: string) => fields.data.find((f: any) => f.key === k)?.label ?? k).join(", ")}</div>}
@@ -305,6 +320,7 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
 function ChartReader({ ticker }: { ticker: string }) {
   const toast = useToast();
   const { status } = useStatus();
+  // chỉ điền sẵn mã khi người dùng mở từ trang của một mã cụ thể; để trống thì AI tự nhận diện mã trên ảnh
   const [form, setForm] = useState({ ticker, timeframe: "Ngày (D)", start: "", end: "", note: "" });
   const [files, setFiles] = useState<File[]>([]);
   const [res, setRes] = useState<any>(null);
@@ -419,7 +435,7 @@ function ChartReader({ ticker }: { ticker: string }) {
                 <div className="row between"><span className="muted">Giá tại {res.system.as_of}</span><b className="mono">{vnd(res.system.price)}</b></div>
                 <div className="row between"><span className="muted">Nguồn dữ liệu</span><SourceBadge source={res.system.source} /></div>
                 {ai.last_price_estimate && <div className="row between"><span className="muted">Giá AI đọc được</span><b className={cls("mono", tone(ai.last_price_estimate - res.system.price))}>{vnd(ai.last_price_estimate)}</b></div>}
-                <Link className="btn" to={`/stock/${res.system ? form.ticker || ai.ticker_detected : ""}`}>Mở phân tích đầy đủ</Link>
+                <Link className="btn" to={`/stock/${(res.system.ticker ?? (form.ticker || ai.ticker_detected) ?? "").toUpperCase()}`}>Mở phân tích đầy đủ</Link>
               </div>
             ) : <Empty title="Chưa có mã để đối chiếu">Nhập mã cổ phiếu để so sánh với tín hiệu định lượng của hệ thống.</Empty>}
           </Card>
@@ -450,7 +466,7 @@ export default function DataCenter() {
       {tab === "sources" && <Sources />}
       {tab === "prices" && <Prices ticker={ticker} />}
       {tab === "fin" && <Financials ticker={ticker} setTicker={setTicker} />}
-      {tab === "chart" && <ChartReader ticker={ticker} />}
+      {tab === "chart" && <ChartReader ticker={(params.get("ticker") ?? "").toUpperCase()} />}
     </>
   );
 }

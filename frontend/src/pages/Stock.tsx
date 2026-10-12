@@ -77,14 +77,20 @@ export default function Stock() {
   const [showLevels, setShowLevels] = useState(true);
   const a = useAsync(() => api.get(`/api/stocks/${ticker}/analysis`), [ticker]);
   const custom = useAsync(
-    () => (period === "CUSTOM" && range.start ? api.get(`/api/stocks/${ticker}/technical?start=${range.start}${range.end ? `&end=${range.end}` : ""}`) : Promise.resolve(null)),
+    () => (period === "CUSTOM" && range.start && !(range.end && range.end < range.start)
+      ? api.get(`/api/stocks/${ticker}/technical?start=${range.start}${range.end ? `&end=${range.end}` : ""}`)
+      : Promise.resolve(null)),
     [ticker, period, range.start, range.end]
   );
   useEffect(() => { setTab("chart"); }, [ticker]);
 
   const d = a.data;
+  // dữ liệu giai đoạn tùy chọn chỉ hợp lệ khi đang KHÔNG tải lại và KHÔNG lỗi (tránh hiển thị khoảng cũ)
+  const cd = period === "CUSTOM" && !custom.loading && !custom.error ? custom.data : null;
+  const rangeError = period === "CUSTOM" && range.start && range.end && range.end < range.start
+    ? "Ngày kết thúc phải sau ngày bắt đầu." : null;
   const chart = useMemo(() => {
-    if (period === "CUSTOM" && custom.data) return custom.data.chart;
+    if (period === "CUSTOM") return cd ? cd.chart : null;
     if (!d) return null;
     const p = PERIODS.find((x) => x.value === period);
     if (!p || !p.days) return d.chart;
@@ -93,7 +99,7 @@ export default function Stock() {
     const t0 = cut(c.candles)[0]?.time;
     const after = (arr: any[]) => arr.filter((x) => x.time >= t0);
     return { ...c, candles: cut(c.candles), volume: cut(c.volume), sma20: after(c.sma20), sma50: after(c.sma50), sma200: after(c.sma200), bb_upper: after(c.bb_upper), bb_lower: after(c.bb_lower), rsi: after(c.rsi), macd: after(c.macd), macd_signal: after(c.macd_signal), macd_hist: after(c.macd_hist) };
-  }, [d, period, custom.data]);
+  }, [d, period, cd]);
   const lines = useMemo(() => (d && showLevels ? [
     { price: Math.round(d.trade_plan.stop_loss), title: "Cắt lỗ", color: "#f43f5e" },
     { price: Math.round(d.trade_plan.take_profit_1), title: "Mục tiêu 1", color: "#22c55e" },
@@ -104,7 +110,7 @@ export default function Stock() {
   if (a.error || !d) return <ErrorBox error={a.error ?? "Không có dữ liệu"} onRetry={a.reload} />;
 
   const t = d.technical, f = d.fundamental, v = d.valuation, r = d.risk, c = d.composite, p = d.trade_plan;
-  const tv = (period === "CUSTOM" && custom.data) ? custom.data.technical : t;
+  const tv = cd ? cd.technical : t;
 
   return (
     <>
@@ -195,25 +201,28 @@ export default function Stock() {
             <div className="row wrap" style={{ marginBottom: 12, gap: 10 }}>
               <Field label="Từ ngày"><input className="input" type="date" value={range.start} onChange={(e) => setRange({ ...range, start: e.target.value })} /></Field>
               <Field label="Đến ngày"><input className="input" type="date" value={range.end} onChange={(e) => setRange({ ...range, end: e.target.value })} /></Field>
-              {custom.data && (
+              {cd && (
                 <div className="row wrap" style={{ gap: 8, alignSelf: "flex-end" }}>
-                  <Badge lg tone={tone(custom.data.period.return)}>Sinh lời giai đoạn {pct(custom.data.period.return, 1, true)}</Badge>
-                  <Badge lg>{custom.data.period.sessions} phiên</Badge>
-                  <Badge lg>Cao nhất {vnd(custom.data.period.high)} · Thấp nhất {vnd(custom.data.period.low)}</Badge>
-                  <Badge lg tone={recTone(custom.data.technical.signal_code)}>Tín hiệu cuối giai đoạn: {custom.data.technical.signal}</Badge>
+                  <Badge lg tone={tone(cd.period.return)}>Sinh lời giai đoạn {pct(cd.period.return, 1, true)}</Badge>
+                  <Badge lg>{cd.period.sessions} phiên</Badge>
+                  <Badge lg>Cao nhất {vnd(cd.period.high)} · Thấp nhất {vnd(cd.period.low)}</Badge>
+                  <Badge lg tone={recTone(cd.technical.signal_code)}>Tín hiệu cuối giai đoạn: {cd.technical.signal}</Badge>
                 </div>
               )}
-              {custom.error && <Alert kind="err">{custom.error}</Alert>}
+              {(rangeError || custom.error) && <Alert kind="err">{rangeError ?? custom.error}</Alert>}
               {!range.start && <span className="small subtle" style={{ alignSelf: "flex-end" }}>Chọn ngày bắt đầu để phân tích kỹ thuật riêng cho giai đoạn này.</span>}
             </div>
           )}
-          {chart ? <PriceChart data={chart} overlays={ov} lines={lines} /> : <Loading height={420} />}
+          {chart ? <PriceChart data={chart} overlays={ov} lines={lines} fit={period !== "ALL"} />
+            : period === "CUSTOM" && (!range.start || rangeError || custom.error)
+              ? <div className="empty" style={{ minHeight: 300, justifyContent: "center" }}>Chọn khoảng thời gian hợp lệ để xem biểu đồ.</div>
+              : <Loading height={420} />}
         </Card>
       )}
 
       {tab === "tech" && (
         <div className="grid g-main">
-          <Card title={`Tín hiệu kỹ thuật ${period === "CUSTOM" && custom.data ? "(giai đoạn tùy chọn)" : ""}`} icon={<Activity size={16} />}
+          <Card title={`Tín hiệu kỹ thuật ${cd ? "(giai đoạn tùy chọn)" : ""}`} icon={<Activity size={16} />}
             actions={<><Badge lg tone={recTone(tv.signal_code)}>{tv.signal}</Badge><span className="mono bold">{num(tv.score, 0)}/100</span></>}>
             <div className="table-wrap">
               <table className="tbl">
@@ -222,7 +231,7 @@ export default function Stock() {
                   {tv.signals.map((s: any, i: number) => (
                     <tr key={i}>
                       <td className="bold">{s.name}</td>
-                      <td className="num mono">{typeof s.value === "number" ? (Math.abs(s.value) < 1.5 && s.name.includes("so với") ? pct(s.value, 1, true) : num(s.value, 2)) : s.value ?? ""}</td>
+                      <td className="num mono">{typeof s.value === "number" ? (s.unit === "pct" || (Math.abs(s.value) < 1.5 && (s.name.includes("so với") || s.name.startsWith("Độ dốc"))) ? pct(s.value, 2, true) : num(s.value, 2)) : s.value ?? ""}</td>
                       <td className="small muted">{s.note}</td>
                       <td>
                         <div className="bar" style={{ position: "relative", background: "var(--surface-3)" }}>
@@ -261,6 +270,7 @@ export default function Stock() {
 
       {tab === "fund" && (
         <div className="col" style={{ gap: 16 }}>
+          {(f.data_warnings ?? []).map((w: string, i: number) => <Alert key={i} kind="warn">{w}</Alert>)}
           <Card title="Chỉ tiêu tài chính theo năm" icon={<Layers size={16} />} hint="Đơn vị: tỷ đồng · ROE = NI/E, ROA = NI/TA, LEV = D/E, ROA_op = (NI + Lãi vay×(1−t))/TA, Sd = Lãi vay×(1−t)/D"
             actions={<Link className="btn sm" to={`/data?ticker=${ticker}`}><FileSpreadsheet size={14} /> Nhập/sửa BCTC</Link>}>
             <div className="table-wrap">

@@ -61,18 +61,18 @@ def analyze(df: pd.DataFrame) -> dict:
     price = float(last["close"])
     signals: list[dict] = []
 
-    def add(name: str, value, score: float, weight: float, note: str) -> None:
-        signals.append({"name": name, "value": value, "score": score, "weight": weight, "note": note})
+    def add(name: str, value, score: float, weight: float, note: str, unit: str | None = None) -> None:
+        signals.append({"name": name, "value": value, "score": score, "weight": weight, "note": note, "unit": unit})
 
     # 1) Xu hướng - đường trung bình
     if _f(last["sma200"]) is not None:
         above200 = price > last["sma200"]
         add("Giá so với MA200", round(price / last["sma200"] - 1, 4), 1 if above200 else -1, 2.0,
-            "Trên MA200: xu hướng dài hạn tăng" if above200 else "Dưới MA200: xu hướng dài hạn giảm")
+            "Trên MA200: xu hướng dài hạn tăng" if above200 else "Dưới MA200: xu hướng dài hạn giảm", unit="pct")
     if _f(last["sma50"]) is not None:
         above50 = price > last["sma50"]
         add("Giá so với MA50", round(price / last["sma50"] - 1, 4), 1 if above50 else -1, 1.5,
-            "Trên MA50: trung hạn tích cực" if above50 else "Dưới MA50: trung hạn tiêu cực")
+            "Trên MA50: trung hạn tích cực" if above50 else "Dưới MA50: trung hạn tiêu cực", unit="pct")
     if _f(last["sma50"]) is not None and _f(last["sma200"]) is not None:
         golden = last["sma50"] > last["sma200"]
         crossed = (prev["sma50"] <= prev["sma200"]) != (last["sma50"] <= last["sma200"])
@@ -81,7 +81,7 @@ def analyze(df: pd.DataFrame) -> dict:
     if _f(last["sma20"]) is not None:
         slope20 = f["sma20"].iloc[-1] / f["sma20"].iloc[-6] - 1
         add("Độ dốc MA20 (5 phiên)", round(float(slope20), 4), float(np.tanh(slope20 * 60)), 1.0,
-            "MA20 hướng lên" if slope20 > 0 else "MA20 hướng xuống")
+            "MA20 hướng lên" if slope20 > 0 else "MA20 hướng xuống", unit="pct")
 
     # 2) Động lượng
     if _f(last["macd"]) is not None and _f(last["signal"]) is not None:

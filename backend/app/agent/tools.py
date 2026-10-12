@@ -87,7 +87,7 @@ def t_get_portfolio(**_) -> dict:
 
 
 def t_optimize_portfolio(tickers: list[str], objective: str = "max_sharpe", max_weight: float = 0.25,
-                         capital: float | None = None, **_) -> dict:
+                         capital: float | None = None, keep_frontier: bool = False, **_) -> dict:
     expected = {}
     for t in tickers:
         a = services.analyze_stock(t.upper(), include_chart=False)
@@ -95,7 +95,8 @@ def t_optimize_portfolio(tickers: list[str], objective: str = "max_sharpe", max_
         if up is not None:
             expected[t.upper()] = float(np.clip(up / 2, -0.3, 0.4)) + 0.03  # kỳ vọng 2 năm → năm, cộng rf
     res = optimizer.optimize(tickers, objective=objective, max_weight=max_weight, expected=expected)
-    res.pop("frontier", None)
+    if not keep_frontier:
+        res.pop("frontier", None)
     if capital:
         prices = {w["ticker"]: services.analyze_stock(w["ticker"], include_chart=False)["technical"]["price"]
                   for w in res["weights"]}

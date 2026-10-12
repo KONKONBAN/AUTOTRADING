@@ -24,9 +24,25 @@ def test_excel_parser_vietstock_layout():
 
 
 def test_template_roundtrip():
+    import io
+
+    from openpyxl import load_workbook
     data = excel_import.financial_template("FPT")
-    r = excel_import.parse_financial_file(data, "t.xlsx")
-    assert len(r["mapping"]) >= 15 and len(r["years"]) >= 3
+    wb = load_workbook(io.BytesIO(data))
+    ws = wb["BCTC"]
+    # file mẫu KHÔNG được điền sẵn số liệu DEMO
+    assert all(ws.cell(r, c).value is None for r in range(5, 24) for c in range(4, 9))
+    values = {"revenue": 1000, "net_income": 100, "total_assets": 2000, "equity": 800, "shares": 50}
+    for r in range(5, 24):
+        key = ws.cell(r, 2).value
+        if key in values:
+            for c in range(4, 9):
+                ws.cell(r, c, values[key])
+    buf = io.BytesIO()
+    wb.save(buf)
+    parsed = excel_import.parse_financial_file(buf.getvalue(), "t.xlsx")
+    assert len(parsed["years"]) == 5
+    assert parsed["years"][-1]["revenue"] == 1000 and parsed["years"][-1]["shares"] == 50
 
 
 def test_price_csv_formats():

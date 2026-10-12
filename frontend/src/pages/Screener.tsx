@@ -20,7 +20,7 @@ export default function Screener() {
 
   const rows = useMemo(() => {
     const list = (res.data?.results ?? []).filter((r: any) =>
-      r.score >= minScore && (!rec || r.code === rec) && (!q || r.ticker.includes(q.toUpperCase()) || r.name.toUpperCase().includes(q.toUpperCase())));
+      r.score >= minScore && (!rec || r.code === rec || (rec === "sell" && r.code === "reduce")) && (!q || r.ticker.includes(q.toUpperCase()) || r.name.toUpperCase().includes(q.toUpperCase())));
     const val = (r: any) => (["technical", "quality", "valuation"].includes(sort.key) ? r.parts[sort.key] : r[sort.key]);
     return [...list].sort((a, b) => {
       const x = val(a), y = val(b);

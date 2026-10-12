@@ -39,6 +39,9 @@ export default function Agent() {
   const logRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const sentQ = useRef(false);
+  // Chống race: câu trả lời đến sau khi người dùng đã chuyển sang cuộc trò chuyện khác sẽ bị bỏ qua
+  const activeRef = useRef<string | null>(null);
+  const reqSeq = useRef(0);
 
   const loadSessions = () => api.get("/api/agent/sessions").then(setSessions).catch(() => {});
   useEffect(() => { loadSessions(); }, []);
@@ -54,11 +57,19 @@ export default function Agent() {
   }, []);
 
   const open = async (id: string) => {
+    reqSeq.current++;
+    activeRef.current = id;
+    setBusy(false);
     setSid(id);
     const r = await api.get(`/api/agent/sessions/${id}`);
-    setMsgs(r.messages);
+    if (activeRef.current === id) setMsgs(r.messages);
   };
-  const newChat = () => { setSid(null); setMsgs([]); setInput(""); setFiles([]); };
+  const newChat = () => {
+    reqSeq.current++;
+    activeRef.current = null;
+    setBusy(false);
+    setSid(null); setMsgs([]); setInput(""); setFiles([]);
+  };
   const remove = async (id: string) => {
     await api.del(`/api/agent/sessions/${id}`);
     if (id === sid) newChat();
@@ -76,15 +87,20 @@ export default function Agent() {
     if (sid) form.append("session_id", sid);
     files.forEach((f) => form.append("files", f));
     setFiles([]);
+    const tok = ++reqSeq.current;
+    const current = () => reqSeq.current === tok;  // người dùng chưa chuyển cuộc trò chuyện
     try {
       const r = await api.form("/api/agent/chat", form);
-      setSid(r.session_id);
-      setMsgs((m) => [...m, { role: "assistant", text: r.reply, tools: r.tools, proposals: r.proposals }]);
+      if (current()) {
+        setSid(r.session_id);
+        activeRef.current = r.session_id;
+        setMsgs((m) => [...m, { role: "assistant", text: r.reply, tools: r.tools, proposals: r.proposals }]);
+      }
       loadSessions();
     } catch (e: any) {
-      setMsgs((m) => [...m, { role: "assistant", text: `❌ ${e.message}` }]);
+      if (current()) setMsgs((m) => [...m, { role: "assistant", text: `❌ ${e.message}` }]);
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 

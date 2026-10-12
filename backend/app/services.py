@@ -54,11 +54,15 @@ def market_overview() -> dict:
     return out
 
 
+MIN_PEERS = 2
+
+
 @ttl_cache(1800)
-def sector_multiples(sector: str) -> dict:
+def sector_multiples(sector: str, exclude: str | None = None) -> dict:
+    """P/E, P/B trung vị của các DN CÙNG NGÀNH (không tính chính mã đang định giá)."""
     pes, pbs = [], []
     for t, (_, sec, _, _) in universe.UNIVERSE.items():
-        if sec != sector:
+        if sec != sector or t == exclude:
             continue
         try:
             last = fund_data.get_financials(t)["rows"][-1]
@@ -71,8 +75,8 @@ def sector_multiples(sector: str) -> dict:
                 pes.append(pe)
         if last.get("bvps") and last["bvps"] > 0:
             pbs.append(price / last["bvps"])
-    return {"pe": float(np.median(pes)) if pes else None,
-            "pb": float(np.median(pbs)) if pbs else None, "n": len(pes)}
+    return {"pe": float(np.median(pes)) if len(pes) >= MIN_PEERS else None,
+            "pb": float(np.median(pbs)) if len(pbs) >= MIN_PEERS else None, "n": len(pes)}
 
 
 def _summary(ticker: str, tech: dict, fa: dict, val: dict, rk: dict, comp: dict, mkt: dict) -> dict:
@@ -80,16 +84,22 @@ def _summary(ticker: str, tech: dict, fa: dict, val: dict, rk: dict, comp: dict,
     last = fa["latest"]
     if (last.get("roe") or 0) >= 0.15:
         pros.append(f"ROE cao ({vn_pct(last['roe'])}) - sử dụng vốn chủ hiệu quả.")
-    elif (last.get("roe") or 0) < 0.08:
-        cons.append(f"ROE thấp ({vn_pct(last.get('roe') or 0)}).")
+    elif last.get("roe") is not None and last["roe"] < 0.08:
+        cons.append(f"ROE thấp ({vn_pct(last['roe'])}).")
     spread = fa["mm_model"].get("leverage_spread")
     if spread is not None and not fa["is_financial"]:
         (pros if spread > 0 else cons).append(
             f"Chênh lệch đòn bẩy ROA_op − Sd = {vn_pct(spread)}: nợ vay {'khuếch đại' if spread > 0 else 'làm giảm'} ROE.")
-    if (fa["quality"].get("ni_cagr") or 0) > 0.12:
+    if fa["quality"].get("negative_equity"):
+        cons.append("Vốn chủ sở hữu ÂM - doanh nghiệp mất cân đối tài chính, rủi ro rất cao.")
+    if fa["quality"].get("ni_turned_loss"):
+        cons.append("Lợi nhuận suy giảm và đã chuyển sang LỖ.")
+    elif (fa["quality"].get("ni_cagr") or 0) > 0.12:
         pros.append(f"Lợi nhuận tăng trưởng {vn_pct(fa['quality']['ni_cagr'])}/năm.")
     elif fa["quality"].get("ni_cagr") is not None and fa["quality"]["ni_cagr"] < 0:
         cons.append("Lợi nhuận suy giảm trong các năm gần đây.")
+    for w in fa.get("data_warnings", []):
+        cons.append(f"Dữ liệu: {w}")
     if val.get("upside") is not None:
         (pros if val["upside"] > 0.1 else cons if val["upside"] < -0.1 else pros).append(
             f"Định giá: giá trị nội tại ≈ {vn_num(val['intrinsic_value'])}đ ({vn_pct(val['upside'], sign=True)} so với thị giá) - {val['verdict']}.")
@@ -116,7 +126,7 @@ def analyze_stock(ticker: str, equity: float = 100_000_000, include_chart: bool 
     rk["level"] = risk.risk_level(rk["volatility"], rk["max_drawdown"])
     fin = fund_data.get_financials(ticker)
     fa = fundamental.analyze(fin, meta["sector"])
-    sm = sector_multiples(meta["sector"])
+    sm = sector_multiples(meta["sector"], ticker)
     val = valuation.valuation(fin["rows"], fa["ratios"], tech["price"], rk.get("beta") or 1.0,
                               meta["sector"], sm["pe"], sm["pb"])
     mkt = market_overview()
@@ -131,7 +141,7 @@ def analyze_stock(ticker: str, equity: float = 100_000_000, include_chart: bool 
         "trade_plan": plan, "summary": _summary(ticker, tech, fa, val, rk, comp, mkt),
     }
     if include_chart:
-        result["chart"] = technical.chart_series(df)
+        result["chart"] = technical.chart_series(df, limit=520)  # đủ cho khung 2 năm
     return result
 
 

@@ -24,7 +24,6 @@ from .config import settings
 from .data import excel_import, fundamentals, providers, universe
 from .db import get_db
 from .finance import calculators, planner
-from .portfolio import optimizer
 from .trading import backtest, engine
 from .trading.broker import OrderError, get_broker
 from .utils import clean
@@ -59,9 +58,10 @@ async def autotrader_scheduler() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     get_db()
-    task = asyncio.create_task(autotrader_scheduler())
+    task = asyncio.create_task(autotrader_scheduler()) if settings.autotrader_scheduler else None
     yield
-    task.cancel()
+    if task:
+        task.cancel()
 
 
 app = FastAPI(title="AutoTrading VN API", version=__version__, lifespan=lifespan,
@@ -144,14 +144,23 @@ def stock_analysis(ticker: str, equity: float = 100_000_000):
 @app.get("/api/stocks/{ticker}/technical")
 def stock_technical(ticker: str, start: str | None = None, end: str | None = None):
     """Phân tích kỹ thuật theo khoảng thời gian tùy chọn."""
+    try:
+        ts_start = pd.Timestamp(start) if start else None
+        ts_end = pd.Timestamp(end) if end else None
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, "Ngày không hợp lệ (định dạng YYYY-MM-DD).") from exc
+    if ts_start is not None and ts_end is not None and ts_start > ts_end:
+        raise HTTPException(400, "Ngày bắt đầu phải trước ngày kết thúc.")
     df = providers.get_history(ticker.upper(), days=1500)
-    if end:
-        df = df[df.index <= pd.Timestamp(end)]
+    if ts_end is not None:
+        df = df[df.index <= ts_end]
     view = df
-    if start:
-        view = df[df.index >= pd.Timestamp(start)]
-        pos = df.index.searchsorted(pd.Timestamp(start))
+    if ts_start is not None:
+        view = df[df.index >= ts_start]
+        pos = df.index.searchsorted(ts_start)
         df = df.iloc[max(0, pos - 200):]
+    if view.empty:
+        raise HTTPException(400, "Không có phiên giao dịch nào trong khoảng thời gian đã chọn.")
     if len(df) < 60:
         raise HTTPException(400, "Không đủ dữ liệu trong khoảng thời gian đã chọn (cần ≥ 60 phiên).")
     res = technical.analyze(df)
@@ -228,15 +237,15 @@ async def upload_financials(file: UploadFile = File(...), ticker: str | None = F
     if not use_ai:
         try:
             return {"method": "parser", **excel_import.parse_financial_file(data, name)}
+        except excel_import.FileFormatError as exc:
+            _bad(exc)  # file hỏng / sai định dạng: AI cũng không đọc được
         except ValueError as exc:
             if not settings.has_anthropic_credentials:
                 _bad(exc)
     try:
         text = excel_import.grid_as_text(data, name)
         return {"method": "ai", **vision.extract_financials_from_text(text, ticker)}
-    except llm.AIUnavailable as exc:
-        _bad(exc)
-    except (llm.AIRefusal, RuntimeError, ValueError) as exc:
+    except (llm.AIUnavailable, llm.AIRefusal, RuntimeError, ValueError) as exc:
         _bad(exc)
 
 
@@ -342,10 +351,8 @@ def list_orders(limit: int = 200):
 def optimize(body: OptimizeIn):
     from .agent.tools import t_optimize_portfolio
     try:
-        res = t_optimize_portfolio(body.tickers, body.objective, body.max_weight, body.capital)
-        res["frontier"] = optimizer.optimize(body.tickers, objective=body.objective,
-                                             max_weight=body.max_weight)["frontier"]
-        return res
+        # đường biên hiệu quả lấy từ CÙNG lần tối ưu (cùng vector lợi nhuận kỳ vọng) với danh mục tối ưu
+        return t_optimize_portfolio(body.tickers, body.objective, body.max_weight, body.capital, keep_frontier=True)
     except ValueError as exc:
         _bad(exc)
 
@@ -506,12 +513,17 @@ _dist = settings.frontend_dist
 if _dist.exists():
     app.mount("/assets", StaticFiles(directory=_dist / "assets"), name="assets")
 
+    _dist_root = _dist.resolve()
+
     @app.get("/{path:path}", include_in_schema=False)
     def spa(path: str):
-        target = _dist / path
-        if path and target.is_file():
+        if path.startswith("api/"):
+            raise HTTPException(404, "Không tìm thấy API")
+        target = (_dist_root / path).resolve()
+        # chống path traversal: chỉ phục vụ file nằm TRONG thư mục build của giao diện
+        if path and target.is_relative_to(_dist_root) and target.is_file():
             return FileResponse(target)
-        return FileResponse(_dist / "index.html")
+        return FileResponse(_dist_root / "index.html")
 else:
     @app.get("/", include_in_schema=False)
     def root():

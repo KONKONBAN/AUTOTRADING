@@ -105,6 +105,9 @@ def irr(cashflows: list[float]) -> float | None:
     """IRR: lãi suất làm NPV = 0. VD (PTVĐTCK Ch.2): [-1, -0.1, -0.5, 0.8, 1.0] → ≈ 4,17%."""
     f = lambda r: npv(r, cashflows)  # noqa: E731
     grid = [-0.99, -0.5, -0.2, 0.0, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10]
+    for x in grid:  # nghiệm rơi đúng vào điểm lưới
+        if abs(f(x)) < 1e-10:
+            return float(x)
     for lo, hi in zip(grid, grid[1:]):
         if f(lo) * f(hi) < 0:
             return float(brentq(f, lo, hi))
@@ -233,7 +236,9 @@ def lease_vs_buy(asset_cost: float, lease_payment: float, years: int, pre_tax_de
         if t >= 1:
             cf -= dep * tax_rate  # mất lá chắn thuế khấu hao
         if t == years:
-            cf -= salvage * (1 - tax_rate)  # mất giá trị thanh lý
+            # mất giá trị thanh lý; tài sản đã khấu hao về đúng giá trị thanh lý nên thuế trên lãi thanh lý = 0
+            book_end = asset_cost - dep * years
+            cf -= salvage - tax_rate * (salvage - book_end)
         if t == 0:
             cf_lease_vs_buy[0] += cf
         else:

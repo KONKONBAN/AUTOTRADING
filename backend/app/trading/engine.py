@@ -22,11 +22,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
 from .. import services
-from ..data import universe
+from ..data import providers, universe
 from ..db import get_db
 from ..utils import vn_num, vn_pct
 from . import vn_rules
-from .broker import OrderError, get_broker
+from .broker import OrderError, get_broker, normalize_ticker
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +98,16 @@ def plan_cycle(cfg: AutoTraderConfig | None = None) -> dict:
     exposure_target = market["recommended_exposure"] if cfg.use_market_filter else 0.95
     actions: list[dict] = []
     notes: list[str] = [f"Thị trường: {market['regime']} → tỷ trọng cổ phiếu mục tiêu {vn_pct(exposure_target, 0)}."]
+    fee = vn_rules.DEFAULT_FEE_RATE
+    # Đề xuất MUA đang chờ duyệt từ nguồn khác (AI Agent) có thể được duyệt → giữ chỗ ngân sách cho chúng.
+    # Đề xuất cũ của chính Auto-Trader sẽ bị thay thế ở chu kỳ này nên không tính.
+    pending_other = [p for p in list_proposals("pending") if p["source"] != "autotrader" and p["side"] == "BUY"]
+    pending_tickers = {p["ticker"] for p in pending_other}
+    pending_value = sum(p["quantity"] * (p["price"] or 0) for p in pending_other)
+    cash_left = max(cash - pending_value, 0.0)
+    # Ngân sách giải ngân dùng CHUNG cho cả mua gia tăng lẫn mua mới, không vượt tỷ trọng mục tiêu
+    budget = max(0.0, equity * exposure_target - acc["market_value"] - pending_value)
+    halted = acc["drawdown"] <= -cfg.max_drawdown_halt
 
     # ---------------- 1) Quản lý vị thế đang nắm giữ (bán) ----------------
     held = {p["ticker"]: p for p in acc["positions"]}
@@ -125,38 +135,46 @@ def plan_cycle(cfg: AutoTraderConfig | None = None) -> dict:
             else:
                 notes.append(f"{t}: cần bán ({reason}) nhưng cổ phiếu chưa về tài khoản (T+2).")
         elif (p["unrealized_pct"] >= cfg.scale_in_gain and p["weight"] < cfg.max_weight * 0.6
-              and a["composite"]["score"] >= cfg.min_score and acc["drawdown"] > -cfg.max_drawdown_halt):
-            add_value = min(equity * cfg.max_weight - p["market_value"], cash * 0.9)
-            qty = vn_rules.round_lot(add_value / price)
+              and a["composite"]["score"] >= cfg.min_score and not halted and budget > 0
+              and t not in pending_tickers and providers.is_tradeable_source(a["data_sources"]["prices"])):
+            add_value = min(equity * cfg.max_weight - p["market_value"], budget, cash_left * 0.9)
+            qty = vn_rules.round_lot(add_value / (price * (1 + fee)))
             if qty > 0:
                 actions.append({"ticker": t, "side": "BUY", "quantity": qty, "price": price,
                                 "stop_loss": max(p["avg_price"], price * (1 - cfg.max_stop_pct)),
                                 "reason": f"Gia tăng vị thế (mua lần 2): đang lãi {vn_pct(p['unrealized_pct'])}, "
                                           f"điểm {vn_num(a['composite']['score'])}"})
+                spent = qty * price * (1 + fee)
+                budget -= spent
+                cash_left -= spent
 
     # ---------------- 2) Tìm cơ hội mua mới ----------------
-    if acc["drawdown"] <= -cfg.max_drawdown_halt:
+    if halted:
         notes.append(f"KILL-SWITCH: tài khoản sụt {vn_pct(acc['drawdown'])} ≥ {vn_pct(cfg.max_drawdown_halt, 0)} - ngưng mua mới.")
     else:
         selling = {a["ticker"] for a in actions if a["side"] == "SELL"}
-        n_pos = len(held) - len(selling)
+        n_pos = len(held) - len(selling) + len(pending_tickers - set(held))
         current_exposure = acc["market_value"] / equity if equity else 0
-        budget = max(0.0, equity * exposure_target - acc["market_value"])
-        budget = min(budget, cash - sum(a["quantity"] * a["price"] for a in actions if a["side"] == "BUY"))
         allowed = _universe(cfg)
-        candidates = [r for r in services.screen()
-                      if r["ticker"] in allowed and r["ticker"] not in held
+        screened = services.screen()
+        demo_skipped = [r["ticker"] for r in screened if not providers.is_tradeable_source(r["source"])]
+        if demo_skipped:
+            notes.append(f"Bỏ qua {len(demo_skipped)} mã chưa có giá thật (đang dùng DEMO) - không giao dịch trên dữ liệu mô phỏng.")
+        candidates = [r for r in screened
+                      if r["ticker"] in allowed and r["ticker"] not in held and r["ticker"] not in pending_tickers
+                      and providers.is_tradeable_source(r["source"])
                       and r["score"] >= cfg.min_score and r["parts"]["technical"] >= cfg.min_technical]
         if current_exposure >= exposure_target:
             notes.append(f"Tỷ trọng cổ phiếu hiện tại {vn_pct(current_exposure, 0)} ≥ mục tiêu - không mua mới.")
         for r in candidates:
-            if n_pos >= cfg.max_positions or budget < 5_000_000:
+            if n_pos >= cfg.max_positions or min(budget, cash_left) < 5_000_000:
                 break
             price = r["price"]
             stop = max(r["stop_loss"], price * (1 - cfg.max_stop_pct))
             risk_ps = max(price - stop, price * 0.01)
             full_qty = min(equity * cfg.risk_per_trade / risk_ps, equity * cfg.max_weight / price)
-            qty = vn_rules.round_lot(min(full_qty * 0.5, budget / price))  # mua thăm dò 50%
+            # mua thăm dò 50%
+            qty = vn_rules.round_lot(min(full_qty * 0.5, min(budget, cash_left) / (price * (1 + fee))))
             if qty <= 0:
                 continue
             actions.append({"ticker": r["ticker"], "side": "BUY", "quantity": qty, "price": price,
@@ -164,7 +182,9 @@ def plan_cycle(cfg: AutoTraderConfig | None = None) -> dict:
                             "reason": f"Mua thăm dò: điểm {vn_num(r['score'])} ({r['recommendation']}), "
                                       f"kỹ thuật {vn_num(r['parts']['technical'])}, upside định giá "
                                       f"{vn_pct(r['upside'] or 0, 0, sign=True)}, cắt lỗ {vn_num(stop)}"})
-            budget -= qty * price
+            spent = qty * price * (1 + fee)
+            budget -= spent
+            cash_left -= spent
             n_pos += 1
         if not candidates:
             notes.append("Không có cổ phiếu đạt đủ tiêu chí mua trong chu kỳ này.")
@@ -177,8 +197,11 @@ def plan_cycle(cfg: AutoTraderConfig | None = None) -> dict:
 def run_cycle(cfg: AutoTraderConfig | None = None, force_mode: str | None = None) -> dict:
     cfg = cfg or load_config()
     mode = force_mode or cfg.mode
-    plan = plan_cycle(cfg)
     db = get_db()
+    if mode in {"suggest", "auto_paper"}:
+        # đề xuất cũ của Auto-Trader được thay bằng kế hoạch mới (tránh trùng lặp, mua gấp đôi)
+        db.execute("UPDATE proposals SET status='expired' WHERE status='pending' AND source='autotrader'")
+    plan = plan_cycle(cfg)
     broker = get_broker()
     executed, proposed = [], []
     if mode == "off":
@@ -186,7 +209,8 @@ def run_cycle(cfg: AutoTraderConfig | None = None, force_mode: str | None = None
     for act in sorted(plan["actions"], key=lambda a: a["side"] != "SELL"):  # bán trước, mua sau
         if mode == "auto_paper":
             try:
-                res = broker.place_order(act["ticker"], act["side"], act["quantity"], act["price"],
+                # lệnh thị trường: khớp tại giá hiện tại
+                res = broker.place_order(act["ticker"], act["side"], act["quantity"], None,
                                          source="autotrader", reason=act["reason"],
                                          stop_loss=act.get("stop_loss"))
                 executed.append({**act, "result": res})
@@ -212,31 +236,45 @@ def list_proposals(status: str | None = "pending") -> list[dict]:
     return get_db().query("SELECT * FROM proposals ORDER BY id DESC LIMIT 200")
 
 
+BUY_SLIPPAGE = 0.02  # duyệt đề xuất MUA: chấp nhận giá hiện tại cao hơn giá đề xuất tối đa 2%
+
+
 def decide_proposal(pid: int, approve: bool) -> dict:
     db = get_db()
-    p = db.query_one("SELECT * FROM proposals WHERE id=?", (pid,))
-    if not p or p["status"] != "pending":
+    # Giành quyền xử lý NGUYÊN TỬ: chỉ một yêu cầu chuyển được trạng thái pending → executing/rejected
+    cur = db.execute("UPDATE proposals SET status=? WHERE id=? AND status='pending'",
+                     ("executing" if approve else "rejected", pid))
+    if cur.rowcount == 0:
         raise ValueError("Đề xuất không tồn tại hoặc đã được xử lý")
     if not approve:
-        db.execute("UPDATE proposals SET status='rejected' WHERE id=?", (pid,))
         return {"id": pid, "status": "rejected"}
+    p = db.query_one("SELECT * FROM proposals WHERE id=?", (pid,))
+    # BÁN: lệnh thị trường (cắt lỗ phải thực hiện được kể cả khi giá đã giảm thêm)
+    # MUA: giới hạn giá đề xuất + 2% để không mua đuổi khi giá đã chạy xa
+    limit = None if p["side"] == "SELL" or not p["price"] else p["price"] * (1 + BUY_SLIPPAGE)
     try:
-        res = get_broker().place_order(p["ticker"], p["side"], p["quantity"], p["price"],
+        res = get_broker().place_order(p["ticker"], p["side"], p["quantity"], limit,
                                        source=p["source"], reason=p["reason"] or "", stop_loss=p["stop_loss"],
                                        take_profit=p["take_profit"])
         db.execute("UPDATE proposals SET status='executed', result=? WHERE id=?", (str(res["id"]), pid))
         return {"id": pid, "status": "executed", "order": res}
-    except OrderError as exc:
-        db.execute("UPDATE proposals SET status='failed', result=? WHERE id=?", (str(exc), pid))
-        return {"id": pid, "status": "failed", "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - mọi lỗi đều phải giải phóng trạng thái 'executing'
+        msg = str(exc) if isinstance(exc, OrderError) else f"Lỗi khi đặt lệnh: {exc}"
+        db.execute("UPDATE proposals SET status='failed', result=? WHERE id=?", (msg, pid))
+        return {"id": pid, "status": "failed", "error": msg}
 
 
 def create_proposal(ticker: str, side: str, quantity: int, price: float | None, reason: str,
                     source: str = "agent", stop_loss: float | None = None,
                     take_profit: float | None = None) -> dict:
+    ticker, side = normalize_ticker(ticker), side.strip().upper()
+    if side not in {"BUY", "SELL"}:
+        raise ValueError("side phải là BUY hoặc SELL")
+    if ticker not in universe.UNIVERSE and providers._imported_history(ticker) is None:  # noqa: SLF001
+        raise ValueError(f"Mã {ticker} không có trong danh sách theo dõi (có thể gõ nhầm)")
     cur = get_db().execute(
         "INSERT INTO proposals(created_at, ticker, side, quantity, price, stop_loss, take_profit, reason, source) "
         "VALUES(?,?,?,?,?,?,?,?,?)",
-        (time.time(), ticker.upper(), side.upper(), int(quantity), price, stop_loss, take_profit, reason, source))
+        (time.time(), ticker, side, int(quantity), price, stop_loss, take_profit, reason, source))
     return {"proposal_id": cur.lastrowid, "status": "pending",
             "message": "Đã tạo đề xuất lệnh - cần người dùng duyệt trên tab Giao dịch."}

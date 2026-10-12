@@ -10,6 +10,8 @@ Nguyên tắc:
 
 from __future__ import annotations
 
+import math
+
 from ..utils import vn_num, vn_pct
 from .calculators import annuity, savings_payment
 
@@ -88,12 +90,31 @@ def plan(monthly_income: float, monthly_expenses: float, current_savings: float 
                            "feasible": monthly <= max(surplus, 0),
                            "share_of_surplus": monthly / surplus if surplus > 0 else None})
 
-    investable_monthly = max(surplus - (emergency_gap / 12 if emergency_gap else 0), 0)
+    # Giai đoạn 1: xây quỹ dự phòng (tối đa 12 tháng); giai đoạn 2: đầu tư toàn bộ phần thặng dư.
+    pos_surplus = max(surplus, 0.0)
+    build_monthly = 0.0 if emergency_gap <= 0 else min(emergency_gap / 12, pos_surplus)
+    months_to_fill = (math.ceil(emergency_gap / build_monthly) if build_monthly > 0 else None) if emergency_gap > 0 else 0
+    invest_during_build = max(pos_surplus - build_monthly, 0.0)
+    investable_monthly = pos_surplus  # sau khi đã đủ quỹ dự phòng
+    savings_rate_m = ASSET_RETURNS["Tiết kiệm ngân hàng"] / 12
+    r_m = exp_return / 12
+    emergency = min(current_savings, emergency_target)
+    invested = max(current_savings - emergency_target, 0.0)  # phần tiền hiện có vượt quỹ dự phòng
+    gap_left = emergency_gap
+    horizons = {12 * y: y for y in (1, 3, 5, 10, 15, 20)}
     projection = []
-    for years in (1, 3, 5, 10, 15, 20):
-        fv = annuity(investable_monthly, exp_return / 12, years * 12)["fv"] + \
-            current_savings * (1 + exp_return) ** years
-        projection.append({"years": years, "value": fv})
+    for month in range(1, 12 * 20 + 1):
+        if gap_left > 0 and build_monthly > 0:
+            put = min(build_monthly, gap_left)
+            gap_left -= put
+            emergency = emergency * (1 + savings_rate_m) + put
+            invested = invested * (1 + r_m) + (pos_surplus - put)
+        else:
+            emergency *= 1 + savings_rate_m
+            invested = invested * (1 + r_m) + (investable_monthly if gap_left <= 0 else invest_during_build)
+        if month in horizons:
+            projection.append({"years": horizons[month], "value": invested + emergency,
+                               "invested": invested, "emergency_fund": emergency})
 
     advice = []
     if surplus <= 0:
@@ -124,5 +145,7 @@ def plan(monthly_income: float, monthly_expenses: float, current_savings: float 
                         "monthly_amount": investable_monthly * w} for k, w in alloc.items()],
         "portfolio_expected_return": exp_return,
         "investable_monthly": investable_monthly,
+        "emergency_build": {"monthly": build_monthly, "months": months_to_fill,
+                            "invest_during_build": invest_during_build},
         "goals": goal_plans, "projection": projection, "advice": advice,
     }

@@ -1,0 +1,5 @@
+# Giữ đúng kiểu xuống dòng cho script khởi động trên từng hệ điều hành
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf
+*.ico binary

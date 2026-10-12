@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r backend/requirements.txt
+      - run: python -m pytest -q
+        working-directory: backend
+
+  frontend-build:
+    name: Frontend build is committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - name: frontend/dist phải khớp mã nguồn (chạy npm run build rồi commit)
+        run: git status --porcelain frontend/dist && test -z "$(git status --porcelain frontend/dist)"
+
+  windows-launcher:
+    name: run.bat starts the app on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start run.bat and wait for /api/health
+        shell: pwsh
+        env:
+          NO_BROWSER: "1"
+          PORT: "8790"
+        run: |
+          New-Item -ItemType Directory -Force .venv | Out-Null
+          Set-Content .venv\shortcut.asked "asked"
+          $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "run.bat > launcher.log 2>&1" -PassThru -WindowStyle Hidden
+          $ok = $false
+          for ($i = 0; $i -lt 120; $i++) {
+            Start-Sleep -Seconds 5
+            try { $r = Invoke-RestMethod http://127.0.0.1:8790/api/health -TimeoutSec 3; if ($r.ok) { $ok = $true; break } } catch {}
+          }
+          Get-Content launcher.log -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "AutoTrading VN did not start on Windows" }
+          $s = Invoke-RestMethod http://127.0.0.1:8790/api/auth/status
+          if (-not $s.local) { throw "local access not detected" }
+          (Invoke-WebRequest http://127.0.0.1:8790/ -UseBasicParsing).StatusCode
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force

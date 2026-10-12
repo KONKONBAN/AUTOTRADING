@@ -168,10 +168,12 @@ export default function Stock() {
 
       <div className="grid g2">
         <Card title="Điểm mạnh" icon={<CheckCircle2 size={16} color="var(--up)" />}>
-          <ul className="pros-cons small" style={{ margin: 0, paddingLeft: 18 }}>{d.summary.pros.map((x: string, i: number) => <li key={i}>{x}</li>)}</ul>
+          {d.summary.pros.length ? <ul className="pros-cons small" style={{ margin: 0, paddingLeft: 18 }}>{d.summary.pros.map((x: string, i: number) => <li key={i}>{x}</li>)}</ul>
+            : <p className="muted small" style={{ margin: 0 }}>Chưa có điểm mạnh nổi bật theo các mô hình hiện tại.</p>}
         </Card>
         <Card title="Rủi ro & điểm yếu" icon={<XCircle size={16} color="var(--down)" />}>
-          <ul className="pros-cons small" style={{ margin: 0, paddingLeft: 18 }}>{d.summary.cons.map((x: string, i: number) => <li key={i}>{x}</li>)}</ul>
+          {d.summary.cons.length ? <ul className="pros-cons small" style={{ margin: 0, paddingLeft: 18 }}>{d.summary.cons.map((x: string, i: number) => <li key={i}>{x}</li>)}</ul>
+            : <p className="muted small" style={{ margin: 0 }}>Chưa phát hiện điểm yếu đáng kể theo các mô hình hiện tại - vẫn luôn đặt điểm cắt lỗ và quản trị tỷ trọng.</p>}
         </Card>
       </div>
 

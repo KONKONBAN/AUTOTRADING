@@ -23,7 +23,7 @@ function baseOptions(height: number) {
     autoSize: true,
     layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: text, fontFamily: "Be Vietnam Pro, sans-serif", fontSize: 11 },
     grid: { vertLines: { color: border, style: LineStyle.Dotted }, horzLines: { color: border, style: LineStyle.Dotted } },
-    rightPriceScale: { borderColor: border },
+    rightPriceScale: { borderColor: border, minimumWidth: 76 },  // cùng độ rộng → trục thời gian các khung thẳng hàng
     timeScale: { borderColor: border, rightOffset: 4, timeVisible: false },
     crosshair: { mode: CrosshairMode.Normal },
     localization: { locale: "vi-VN", priceFormatter: (p: number) => new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 2 }).format(p) },

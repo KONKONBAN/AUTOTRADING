@@ -360,7 +360,7 @@ function ChartReader({ ticker }: { ticker: string }) {
               </div>
             )}
             <div className="form-grid">
-              <Field label="Mã cổ phiếu (để đối chiếu)"><input className="input" value={form.ticker} onChange={(e) => setForm({ ...form, ticker: e.target.value.toUpperCase() })} /></Field>
+              <Field label="Mã cổ phiếu (để đối chiếu)"><input className="input" placeholder="Để trống: AI tự nhận diện mã trên ảnh" value={form.ticker} onChange={(e) => setForm({ ...form, ticker: e.target.value.toUpperCase() })} /></Field>
               <Field label="Khung thời gian nến"><input className="input" value={form.timeframe} onChange={(e) => setForm({ ...form, timeframe: e.target.value })} /></Field>
               <Field label="Từ ngày"><input className="input" type="date" value={form.start} onChange={(e) => setForm({ ...form, start: e.target.value })} /></Field>
               <Field label="Đến ngày"><input className="input" type="date" value={form.end} onChange={(e) => setForm({ ...form, end: e.target.value })} /></Field>

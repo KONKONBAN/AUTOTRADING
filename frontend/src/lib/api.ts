@@ -4,12 +4,16 @@ export class ApiError extends Error {}
 async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let msg = `Lỗi ${res.status}`;
+    let code: string | undefined;
     try {
       const j = await res.json();
       msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail ?? j);
+      code = j.code;
     } catch {
       /* ignore */
     }
+    // truy cập từ xa hết phiên / chưa đặt mật khẩu → quay về màn hình đăng nhập
+    if (code === "login_required" || code === "password_not_set") window.dispatchEvent(new CustomEvent("auth-required"));
     throw new ApiError(msg);
   }
   const ct = res.headers.get("content-type") || "";

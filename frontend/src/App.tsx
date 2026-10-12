@@ -1,4 +1,5 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
+import AuthGate from "./components/AuthGate";
 import Layout from "./components/Layout";
 import { ToastProvider } from "./components/ui";
 import { StatusProvider } from "./lib/status";
@@ -11,12 +12,14 @@ import Finance from "./pages/Finance";
 import Knowledge from "./pages/Knowledge";
 import Portfolio from "./pages/Portfolio";
 import Screener from "./pages/Screener";
+import Settings from "./pages/Settings";
 import Stock from "./pages/Stock";
 
 export default function App() {
   return (
     <ThemeProvider>
       <ToastProvider>
+        <AuthGate>
         <StatusProvider>
           <BrowserRouter>
             <Layout>
@@ -31,11 +34,13 @@ export default function App() {
                 <Route path="/finance" element={<Finance />} />
                 <Route path="/knowledge" element={<Knowledge />} />
                 <Route path="/data" element={<DataCenter />} />
+                <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Dashboard />} />
               </Routes>
             </Layout>
           </BrowserRouter>
         </StatusProvider>
+        </AuthGate>
       </ToastProvider>
     </ThemeProvider>
   );

@@ -10,13 +10,12 @@ from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, services
+from . import __version__, remote, security, services
 from .agent import agent as ai_agent
 from .agent import knowledge, llm, vision
 from .analysis import technical
@@ -62,11 +61,30 @@ async def lifespan(_: FastAPI):
     yield
     if task:
         task.cancel()
+    remote.stop()
 
 
 app = FastAPI(title="AutoTrading VN API", version=__version__, lifespan=lifespan,
               default_response_class=CleanJSONResponse)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# KHÔNG bật CORS: giao diện được phục vụ cùng địa chỉ; CORS "*" sẽ cho phép trang web lạ đọc dữ liệu
+# danh mục / đặt lệnh qua trình duyệt của bạn tới máy chủ cục bộ.
+
+
+@app.middleware("http")
+async def access_guard(request: Request, call_next):
+    """Trên máy này: tự do. Từ xa (điện thoại/Internet): phải đặt mật khẩu và đăng nhập."""
+    if security.needs_guard(request.url.path) and not security.is_local(request):
+        if not security.password_set():
+            return CleanJSONResponse({"detail": "Truy cập từ xa bị khóa vì chưa đặt mật khẩu. Trên máy tính chạy "
+                                                "ứng dụng, vào Cài đặt → Truy cập từ điện thoại để đặt mật khẩu.",
+                                      "code": "password_not_set"}, status_code=403)
+        if not security.authenticated(request):
+            return CleanJSONResponse({"detail": "Vui lòng đăng nhập.", "code": "login_required"}, status_code=401)
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
 
 
 def _bad(exc: Exception, code: int = 400):
@@ -85,6 +103,90 @@ async def _read_files(files: list[UploadFile] | None) -> list[tuple[bytes, str]]
                   else mt)
         out.append((data, mt))
     return out
+
+
+# ---------------------------------------------------------------- truy cập & điện thoại
+class LoginIn(BaseModel):
+    password: str
+
+
+class PasswordIn(BaseModel):
+    new_password: str
+    current_password: str | None = None
+
+
+def _require_local(request: Request) -> None:
+    if not security.is_local(request):
+        raise HTTPException(403, "Chỉ thao tác được trên chính máy tính đang chạy ứng dụng.")
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    local = security.is_local(request)
+    return {"local": local, "password_set": security.password_set(),
+            "password_from_env": security.password_from_env(),
+            "authenticated": local or security.authenticated(request)}
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginIn, request: Request, response: Response):
+    ip = security.client_ip(request)
+    wait = security.login_blocked(ip)
+    if wait:
+        raise HTTPException(429, f"Sai mật khẩu quá nhiều lần - thử lại sau {wait // 60 + 1} phút.")
+    if not security.password_set():
+        raise HTTPException(403, "Chưa đặt mật khẩu - hãy đặt trên máy tính chạy ứng dụng.")
+    if not security.check_password(body.password):
+        security.record_failure(ip)
+        raise HTTPException(401, "Sai mật khẩu.")
+    security.clear_failures(ip)
+    https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    response.set_cookie(security.COOKIE, security.make_token(), max_age=security.SESSION_SECONDS,
+                        httponly=True, samesite="lax", secure=https, path="/")
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(security.COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.post("/api/auth/password")
+def auth_password(body: PasswordIn, request: Request, response: Response):
+    if not security.is_local(request):
+        # từ xa: phải đăng nhập (middleware) VÀ nhập đúng mật khẩu hiện tại
+        if not body.current_password or not security.check_password(body.current_password):
+            raise HTTPException(403, "Mật khẩu hiện tại không đúng.")
+    try:
+        security.set_password(body.new_password)
+    except ValueError as exc:
+        _bad(exc)
+    if not security.is_local(request):  # giữ phiên của chính thiết bị vừa đổi mật khẩu
+        response.set_cookie(security.COOKIE, security.make_token(), max_age=security.SESSION_SECONDS,
+                            httponly=True, samesite="lax", path="/")
+    return {"ok": True}
+
+
+@app.get("/api/remote/info")
+def remote_info(request: Request):
+    port = request.url.port or settings.port
+    return {"lan_urls": [f"http://{ip}:{port}" for ip in remote.lan_addresses()],
+            "tunnel": remote.status(), "password_set": security.password_set(), "local": security.is_local(request)}
+
+
+@app.post("/api/remote/tunnel/start")
+async def tunnel_start(request: Request):
+    _require_local(request)
+    if not security.password_set():
+        raise HTTPException(400, "Hãy đặt mật khẩu trước khi mở truy cập qua Internet.")
+    return await asyncio.to_thread(remote.start, request.url.port or settings.port)
+
+
+@app.post("/api/remote/tunnel/stop")
+def tunnel_stop(request: Request):
+    _require_local(request)
+    return remote.stop()
 
 
 # ---------------------------------------------------------------- system

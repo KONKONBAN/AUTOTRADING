@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
-  Bot, BookOpen, Database, Filter, LayoutDashboard, LineChart, Menu, Moon, PiggyBank, RefreshCw, Search, Sun, Wallet, Zap,
+  Bot, BookOpen, Database, Filter, LayoutDashboard, LineChart, Menu, Moon, PiggyBank, RefreshCw, Search, Smartphone, Sun, Wallet, Zap,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
@@ -35,7 +35,13 @@ const NAV: { section: string; items: NavItem[] }[] = [
       { to: "/knowledge", label: "Kiến thức nền tảng", icon: BookOpen },
     ],
   },
-  { section: "Dữ liệu", items: [{ to: "/data", label: "Dữ liệu & nhập liệu", icon: Database }] },
+  {
+    section: "Dữ liệu & cài đặt",
+    items: [
+      { to: "/data", label: "Dữ liệu & nhập liệu", icon: Database },
+      { to: "/settings", label: "Cài đặt & điện thoại", icon: Smartphone },
+    ],
+  },
 ];
 const ALL_ITEMS = NAV.flatMap((s) => s.items);
 

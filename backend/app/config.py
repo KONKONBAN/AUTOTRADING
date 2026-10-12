@@ -39,6 +39,9 @@ class Settings:
     allow_live_trading: bool = _bool("ALLOW_LIVE_TRADING", False)
     autotrader_scheduler: bool = _bool("AUTOTRADER_SCHEDULER", True)
     db_path: Path = ROOT_DIR / os.getenv("DB_PATH", "backend/data/autotrading.sqlite3")
+    # Mật khẩu truy cập từ xa (điện thoại / Internet). Để trống thì đặt trong ứng dụng: Cài đặt → Truy cập từ xa.
+    app_password: str = os.getenv("APP_PASSWORD", "")
+    port: int = int(os.getenv("PORT", "8000"))
     frontend_dist: Path = ROOT_DIR / "frontend" / "dist"
 
     @property

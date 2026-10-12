@@ -21,6 +21,15 @@ ROOT = Path(__file__).resolve().parent
 MIN_PY = (3, 10)
 
 
+def _utf8_console() -> None:
+    """Windows: khi đầu ra bị chuyển hướng (file, tiến trình khác) Python dùng bảng mã cp1252 và sẽ lỗi khi in
+    tiếng Việt có dấu. Chuyển stdout/stderr sang UTF-8 (cửa sổ console thật vốn đã là UTF-8)."""
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if enc != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def fail(msg: str) -> None:
     print("\n[LỖI] " + msg, flush=True)
     sys.exit(1)
@@ -74,6 +83,7 @@ def open_browser_when_ready(port: int) -> None:
 
 
 def main() -> None:
+    _utf8_console()
     if sys.version_info < MIN_PY:
         fail(f"Cần Python {MIN_PY[0]}.{MIN_PY[1]} trở lên (đang dùng {sys.version.split()[0]}).")
     if not (ROOT / "backend" / "app" / "main.py").exists():

@@ -90,7 +90,8 @@ Thứ tự ưu tiên: **dữ liệu bạn nhập → nguồn tự động → DE
 1. **Nguồn tự động** (`backend/app/data/providers.py`): VNDirect dchart → SSI iBoard → TCBS → VPS → Vietstock → CafeF. Nguồn lỗi kết nối được tạm bỏ qua 5 phút để ứng dụng không bị chậm; nguồn thành công gần nhất được ưu tiên lần sau. BCTC tự động lấy từ TCBS.
 2. **Khi tất cả nguồn đều lỗi**, giao diện hiển thị cảnh báo và hướng dẫn nhập tay ở trang **Dữ liệu & nhập liệu**:
    - **Giá**: CSV/Excel định dạng Amibroker `<Ticker>,<DTYYYYMMDD>,<Open>,<High>,<Low>,<Close>,<Volume>` hoặc bảng có tiêu đề *Ngày, Giá mở cửa, Cao nhất, Thấp nhất, Đóng cửa, Khối lượng* (giá nghìn đồng tự quy đổi).
-   - **BCTC Excel**: tải **file mẫu** (điền sẵn số liệu hiện có) hoặc dùng file xuất "chỉ tiêu × năm" từ Vietstock/CafeF/FiinPro… Bộ đọc tự nhận diện chỉ tiêu tiếng Việt/Anh, cột năm, đơn vị (đồng/nghìn/triệu/tỷ), ưu tiên *LNST cổ đông công ty mẹ*, cộng vay ngắn + dài hạn. Bạn **xem lại & sửa** trước khi lưu.
+   - **BCTC Excel**: tải **file mẫu** (điền sẵn số liệu thật đã có; không bao giờ điền số DEMO, các ô hệ thống chỉ ước tính được để trống) hoặc dùng file xuất "chỉ tiêu × năm" từ Vietstock/CafeF/FiinPro… Bộ đọc tự nhận diện chỉ tiêu tiếng Việt/Anh, cột năm (bỏ qua cột quý/6 tháng/dự phóng), kiểu số VN `1.234,5` hay EN `1,234.5`, đơn vị (đồng/nghìn/triệu/tỷ, kể cả "1.000.000 VND"), ưu tiên *LNST cổ đông công ty mẹ*, cộng vay ngắn + dài hạn. Bạn **xem lại & sửa** trước khi lưu; nếu đơn vị phải đoán, dùng nút **×1000 / ÷1000** để chỉnh.
+   - Số liệu nhập tay **không bao giờ trộn với số DEMO**: khi chưa có BCTC thật từ nguồn tự động, chỉ các năm bạn nhập được dùng để phân tích.
    - **BCTC ảnh/PDF**: AI trích xuất số liệu (cần API key).
    - **Ảnh biểu đồ nến**: AI đọc xu hướng, mô hình giá/nến, hỗ trợ/kháng cự, đề xuất điểm mua/cắt lỗ và **đối chiếu với tín hiệu định lượng** cùng mã/giai đoạn.
 3. **DEMO**: dữ liệu mô phỏng, luôn gắn nhãn vàng "DEMO" để bạn không nhầm với dữ liệu thật.
@@ -108,6 +109,9 @@ Thứ tự ưu tiên: **dữ liệu bạn nhập → nguồn tự động → DE
 - Khối lượng theo rủi ro: lỗ tối đa 1,5% vốn/lệnh, tỷ trọng ≤ 20%/mã, ≤ 8 mã.
 - Bán khi: chạm cắt lỗ (2×ATR, tối đa 7%), trailing stop 10%, gãy xu hướng, điểm suy giảm, thị trường phân phối.
 - Kill-switch: ngưng mua mới khi tài khoản sụt ≥ 15%.
+- Không đặt lệnh trên giá DEMO; ngân sách giải ngân dùng chung cho mua mới, mua gia tăng và các đề xuất MUA đang chờ duyệt.
+
+**Lệnh trên tài khoản giấy** mô phỏng lệnh LO: giá đặt là giá giới hạn, lệnh luôn khớp tại giá thị trường hiện tại (mua chỉ khớp khi giá đặt ≥ giá thị trường, bán khi ≤). Khi **duyệt đề xuất**: MUA chấp nhận giá cao hơn giá đề xuất tối đa 2% (không vượt trần); BÁN có giá (VD: AI đề xuất chốt lời) không khớp nếu thị trường thấp hơn giá đề xuất quá 2%; lệnh thoát vị thế của Auto-Trader (cắt lỗ, trailing stop) là lệnh thị trường. Mỗi đề xuất chỉ được duyệt một lần.
 - Chạy tự động mỗi ngày làm việc lúc 14:15 (đổi được) nếu chế độ khác "Tắt".
 
 **Backtest** dùng cùng bộ quy tắc trên dữ liệu lịch sử. Lưu ý: điểm cơ bản dùng số liệu hiện tại (không point-in-time) nên kết quả có thể lạc quan hơn thực tế.
@@ -137,7 +141,7 @@ frontend/src/  React + TypeScript + Vite, biểu đồ TradingView Lightweight C
 cd backend && ../.venv/bin/python -m pytest -q
 ```
 
-26 bài kiểm thử, trong đó các công thức được đối chiếu trực tiếp với **ví dụ trong giáo trình** (VD: lũy kế 15% / bình quân 4,7%; IRR 4,17%; sinh lời kỳ vọng 18,22%; YTM 8,04%; TP chuyển đổi tỷ lệ 25; NPV +137,2 tỷ; WACC 11,56%; trần/sàn VNM 61.200/53.200; tách lệnh 1.530 = 1.500 + 30), cùng bộ đọc Excel, luật T+2/lô chẵn, Auto-Trader, backtest, tối ưu danh mục và vòng lặp AI Agent (giả lập).
+65 bài kiểm thử, trong đó các công thức được đối chiếu trực tiếp với **ví dụ trong giáo trình** (VD: lũy kế 15% / bình quân 4,7%; IRR 4,17%; sinh lời kỳ vọng 18,22%; YTM 8,04%; TP chuyển đổi tỷ lệ 25; NPV +137,2 tỷ; WACC 11,56%; trần/sàn VNM 61.200/53.200; tách lệnh 1.530 = 1.500 + 30), cùng bộ đọc Excel, luật T+2/lô chẵn, Auto-Trader, backtest, tối ưu danh mục, vòng lặp AI Agent (giả lập) và các kiểm thử hồi quy cho lỗi đã sửa (`tests/test_review_fixes.py`).
 
 ---
 

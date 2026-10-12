@@ -18,6 +18,7 @@ import anthropic
 
 from .. import services
 from ..config import settings
+from ..context import current_user_id
 from ..data import universe
 from ..db import get_db
 from ..utils import vn_num, vn_pct
@@ -85,29 +86,42 @@ def _append_user(messages: list, blocks: list[dict]) -> None:
 
 # ------------------------------------------------------------------ sessions
 def _load(session_id: str) -> dict | None:
-    row = get_db().query_one("SELECT * FROM agent_sessions WHERE id=?", (session_id,))
+    """Phiên trò chuyện CỦA tài khoản hiện tại (phiên của người khác coi như không tồn tại)."""
+    row = get_db().query_one("SELECT * FROM agent_sessions WHERE id=? AND user_id=?", (session_id, current_user_id()))
     if row:
         row["messages"] = json.loads(row["messages"])
     return row
 
 
+def _usable_session_id(session_id: str | None) -> str:
+    """Mã phiên hợp lệ cho tài khoản hiện tại: mã đã thuộc về người khác → cấp mã mới (không ghi đè)."""
+    if session_id:
+        row = get_db().query_one("SELECT user_id FROM agent_sessions WHERE id=?", (session_id,))
+        if row is None or row["user_id"] == current_user_id():
+            return session_id
+    return uuid.uuid4().hex[:12]
+
+
 def _save(session_id: str, messages: list, title: str | None = None) -> None:
     now = time.time()
     db = get_db()
-    if db.query_one("SELECT id FROM agent_sessions WHERE id=?", (session_id,)):
-        db.execute("UPDATE agent_sessions SET messages=?, updated_at=? WHERE id=?",
-                   (json.dumps(messages, ensure_ascii=False), now, session_id))
+    uid = current_user_id()
+    if db.query_one("SELECT id FROM agent_sessions WHERE id=? AND user_id=?", (session_id, uid)):
+        db.execute("UPDATE agent_sessions SET messages=?, updated_at=? WHERE id=? AND user_id=?",
+                   (json.dumps(messages, ensure_ascii=False), now, session_id, uid))
     else:
-        db.execute("INSERT INTO agent_sessions(id, created_at, updated_at, title, messages) VALUES(?,?,?,?,?)",
-                   (session_id, now, now, title or "Cuộc trò chuyện mới", json.dumps(messages, ensure_ascii=False)))
+        db.execute("INSERT INTO agent_sessions(id, user_id, created_at, updated_at, title, messages) "
+                   "VALUES(?,?,?,?,?,?)", (session_id, uid, now, now, title or "Cuộc trò chuyện mới",
+                                           json.dumps(messages, ensure_ascii=False)))
 
 
 def list_sessions() -> list[dict]:
-    return get_db().query("SELECT id, title, created_at, updated_at FROM agent_sessions ORDER BY updated_at DESC LIMIT 50")
+    return get_db().query("SELECT id, title, created_at, updated_at FROM agent_sessions WHERE user_id=? "
+                          "ORDER BY updated_at DESC LIMIT 50", (current_user_id(),))
 
 
 def delete_session(session_id: str) -> None:
-    get_db().execute("DELETE FROM agent_sessions WHERE id=?", (session_id,))
+    get_db().execute("DELETE FROM agent_sessions WHERE id=? AND user_id=?", (session_id, current_user_id()))
 
 
 def transcript(session_id: str) -> list[dict]:
@@ -139,7 +153,7 @@ _LOCKS_GUARD = threading.Lock()
 
 def chat(message: str, session_id: str | None = None,
          attachments: list[tuple[bytes, str]] | None = None) -> dict:
-    session_id = session_id or uuid.uuid4().hex[:12]
+    session_id = _usable_session_id(session_id)
     with _LOCKS_GUARD:
         lock = _SESSION_LOCKS.setdefault(session_id, threading.Lock())
     with lock:  # hai câu hỏi cùng lúc vào MỘT phiên chạy lần lượt - không ghi đè lịch sử của nhau

@@ -1,5 +1,6 @@
 """Kiểm thử hồi quy cho các lỗi đã sửa sau đợt review trước khi tạo PR."""
 import pytest
+from conftest import login
 from fastapi.testclient import TestClient
 
 from app.agent import agent as agent_mod
@@ -15,7 +16,7 @@ from app.trading import engine
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as c:
-        yield c
+        yield login(c)
 
 
 # ------------------------------------------------------------------ dữ liệu / Excel
@@ -250,9 +251,10 @@ def test_single_year_has_no_cagr():
 
 
 def _settled_lot(ticker: str, qty: int, price: float):
+    from app.context import current_user_id
     from app.db import get_db
-    get_db().execute("INSERT INTO lots(ticker, quantity, price, buy_date) VALUES(?,?,?,?)",
-                     (ticker, qty, price, "2020-01-02"))
+    get_db().execute("INSERT INTO lots(user_id, ticker, quantity, price, buy_date) VALUES(?,?,?,?,?)",
+                     (current_user_id(), ticker, qty, price, "2020-01-02"))
 
 
 def test_priced_sell_proposal_not_sold_below_approved_price():

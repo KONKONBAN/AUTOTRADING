@@ -419,3 +419,54 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .spin { animation: spin 0.8s linear infinite; }
 .mobile-more { position: fixed; inset: 0; z-index: 39; background: rgba(0, 0, 0, 0.45); display: flex; align-items: flex-end; padding: 12px 12px 84px; }
 .mobile-more .card { width: 100%; display: flex; flex-direction: column; gap: 2px; padding: 10px; }
+
+/* ------------------------------------------------------------------ tài khoản */
+.show-mobile { display: none; }
+.ellipsis { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.avatar-chip {
+  display: inline-grid; place-items: center; flex: none; border-radius: 50%;
+  background: linear-gradient(135deg, var(--brand), var(--brand-2)); color: var(--brand-ink); font-weight: 700; letter-spacing: 0.02em;
+}
+.avatar-btn { border: 0; background: none; padding: 0; cursor: pointer; }
+.user-card { display: flex; align-items: center; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.user-link { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; border: 0; background: none; color: var(--text);
+  text-align: left; cursor: pointer; padding: 0; font: inherit; }
+.user-link b { font-size: 13px; }
+.user-link span span, .user-link .tiny { display: block; }
+.btn.block { width: 100%; justify-content: center; }
+.btn.lg { height: 46px; font-size: 15px; }
+.center { text-align: center; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); cursor: pointer; }
+.check input { width: 16px; height: 16px; accent-color: var(--brand); }
+.field > span { font-size: 12px; color: var(--text-2); font-weight: 500; }
+.field small { font-size: 11px; }
+.eyebrow { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--brand);
+  text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+.qr { background: #fff; padding: 8px; border-radius: 12px; flex: none; }
+.input.sm { height: 32px; font-size: 12px; padding: 0 8px; }
+
+.auth-page { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); background: var(--bg); }
+.auth-hero {
+  position: relative; overflow: hidden; color: #fff; padding: 56px clamp(28px, 6vw, 88px);
+  display: flex; flex-direction: column; justify-content: center; gap: 22px;
+  background: radial-gradient(1200px 600px at -10% 110%, rgba(255,255,255,0.12), transparent 60%),
+              linear-gradient(150deg, var(--hero-1, #0b5d3b), var(--hero-2, #07402a));
+}
+.auth-brand { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 600; }
+.auth-brand img { width: 40px; height: 40px; border-radius: 10px; background: rgba(255,255,255,0.12); padding: 4px; }
+.auth-hero h1 { font-size: clamp(26px, 3.2vw, 40px); line-height: 1.2; max-width: 560px; letter-spacing: -0.02em; }
+.auth-hero ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; max-width: 520px; }
+.auth-hero li { display: flex; gap: 12px; align-items: flex-start; font-size: 15px; opacity: 0.92; line-height: 1.5; }
+.auth-hero li svg { flex: none; margin-top: 2px; }
+.auth-note { font-size: 12px; opacity: 0.7; }
+.auth-panel { display: grid; place-items: center; padding: 32px 16px; }
+.auth-card { width: 100%; max-width: 400px; }
+.auth-card.wide { max-width: 480px; }
+.auth-card h2 { font-size: 26px; letter-spacing: -0.02em; margin-bottom: 4px; }
+@media (max-width: 860px) {
+  .auth-page { grid-template-columns: 1fr; }
+  .auth-hero { padding: 28px 20px; gap: 12px; }
+  .auth-hero h1 { font-size: 22px; }
+  .auth-hero ul, .auth-note { display: none; }
+  .show-mobile { display: inline-flex; }
+}

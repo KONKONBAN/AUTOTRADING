@@ -15,11 +15,12 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, remote, security, services
+from . import __version__, auth, remote, services
 from .agent import agent as ai_agent
 from .agent import knowledge, llm, vision
 from .analysis import technical
 from .config import settings
+from .context import as_user, reset_current_user, set_current_user
 from .data import excel_import, fundamentals, providers, universe
 from .db import get_db
 from .finance import calculators, planner
@@ -38,17 +39,21 @@ class CleanJSONResponse(JSONResponse):
 
 # ---------------------------------------------------------------- scheduler
 async def autotrader_scheduler() -> None:
-    """Chạy Auto-Trader mỗi ngày làm việc vào giờ cấu hình (giờ máy chủ)."""
+    """Chạy Auto-Trader mỗi ngày làm việc vào giờ cấu hình (giờ máy tính) - cho TỪNG tài khoản đã bật."""
     while True:
         try:
-            cfg = engine.load_config()
             now = datetime.now()
-            last = get_db().get_kv("autotrader_last_run") or ""
-            if (cfg.mode != "off" and now.weekday() < 5 and now.strftime("%H:%M") >= cfg.run_time
-                    and not last.startswith(date.today().isoformat())):
-                log.info("Auto-Trader: chạy chu kỳ tự động (%s)", cfg.mode)
-                services.clear_caches()
-                await asyncio.to_thread(engine.run_cycle, cfg)
+            if now.weekday() < 5:
+                users = get_db().query("SELECT id FROM users WHERE disabled=0")
+                for u in users:
+                    with as_user(u["id"]):
+                        cfg = engine.load_config()
+                        last = engine.last_run() or ""
+                        if (cfg.mode != "off" and now.strftime("%H:%M") >= cfg.run_time
+                                and not last.startswith(date.today().isoformat())):
+                            log.info("Auto-Trader: chạy chu kỳ tự động (%s) cho tài khoản #%s", cfg.mode, u["id"])
+                            services.clear_caches()
+                            await asyncio.to_thread(engine.run_cycle, cfg)
         except Exception:  # noqa: BLE001
             log.exception("Lỗi scheduler Auto-Trader")
         await asyncio.sleep(60)
@@ -72,15 +77,23 @@ app = FastAPI(title="AutoTrading VN API", version=__version__, lifespan=lifespan
 
 @app.middleware("http")
 async def access_guard(request: Request, call_next):
-    """Trên máy này: tự do. Từ xa (điện thoại/Internet): phải đặt mật khẩu và đăng nhập."""
-    if security.needs_guard(request.url.path) and not security.is_local(request):
-        if not security.password_set():
-            return CleanJSONResponse({"detail": "Truy cập từ xa bị khóa vì chưa đặt mật khẩu. Trên máy tính chạy "
-                                                "ứng dụng, vào Cài đặt → Truy cập từ điện thoại để đặt mật khẩu.",
-                                      "code": "password_not_set"}, status_code=403)
-        if not security.authenticated(request):
-            return CleanJSONResponse({"detail": "Vui lòng đăng nhập.", "code": "login_required"}, status_code=401)
-    response = await call_next(request)
+    """Mọi API (trừ đăng nhập/đăng ký) cần phiên đăng nhập hợp lệ; gắn tài khoản vào ngữ cảnh yêu cầu."""
+    user = auth.session_user(request.cookies.get(auth.COOKIE))
+    request.state.user = user
+    if auth.needs_login(request.url.path) and user is None:
+        code = "setup_required" if auth.user_count() == 0 else "login_required"
+        return CleanJSONResponse({"detail": "Vui lòng đăng nhập.", "code": code}, status_code=401)
+    # chống CSRF bổ sung: yêu cầu thay đổi dữ liệu phải đến từ chính trang của ứng dụng
+    origin = request.headers.get("origin")
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and origin:
+        host = request.headers.get("host", "")
+        if origin.split("://", 1)[-1].rstrip("/") != host:
+            return CleanJSONResponse({"detail": "Yêu cầu không hợp lệ (khác nguồn)."}, status_code=403)
+    token = set_current_user(user["id"] if user else None)
+    try:
+        response = await call_next(request)
+    finally:
+        reset_current_user(token)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -105,87 +118,213 @@ async def _read_files(files: list[UploadFile] | None) -> list[tuple[bytes, str]]
     return out
 
 
-# ---------------------------------------------------------------- truy cập & điện thoại
-class LoginIn(BaseModel):
+# ---------------------------------------------------------------- tài khoản
+class SetupIn(BaseModel):
+    username: str
     password: str
+    display_name: str | None = None
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+    remember: bool = True
 
 
 class PasswordIn(BaseModel):
+    current_password: str
     new_password: str
-    current_password: str | None = None
 
 
-def _require_local(request: Request) -> None:
-    if not security.is_local(request):
-        raise HTTPException(403, "Chỉ thao tác được trên chính máy tính đang chạy ứng dụng.")
+class ProfileIn(BaseModel):
+    display_name: str
+
+
+class UserCreateIn(BaseModel):
+    username: str
+    password: str
+    display_name: str | None = None
+    role: str = "user"
+
+
+class UserUpdateIn(BaseModel):
+    display_name: str | None = None
+    role: str | None = None
+    disabled: bool | None = None
+    password: str | None = None
+
+
+class AdminSettingsIn(BaseModel):
+    allow_registration: bool
+
+
+def _me(request: Request) -> dict:
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(401, "Vui lòng đăng nhập.")
+    return user
+
+
+def _admin(request: Request) -> dict:
+    user = _me(request)
+    if user["role"] != "admin":
+        raise HTTPException(403, "Chỉ quản trị viên được thực hiện thao tác này.")
+    return user
+
+
+def _start_session(request: Request, response: Response, user: dict, remember: bool) -> None:
+    token, ttl = auth.create_session(user["id"], remember, request.headers.get("user-agent"), auth.client_ip(request))
+    https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    response.set_cookie(auth.COOKIE, token, max_age=ttl if remember else None, httponly=True, samesite="lax",
+                        secure=https, path="/")
 
 
 @app.get("/api/auth/status")
 def auth_status(request: Request):
-    local = security.is_local(request)
-    return {"local": local, "password_set": security.password_set(),
-            "password_from_env": security.password_from_env(),
-            "authenticated": local or security.authenticated(request)}
+    return {"setup_required": auth.user_count() == 0, "registration_open": auth.registration_open(),
+            "local": auth.is_local(request), "user": getattr(request.state, "user", None),
+            "ai_enabled": settings.has_anthropic_credentials}
+
+
+@app.post("/api/auth/setup")
+def auth_setup(body: SetupIn, request: Request, response: Response):
+    if not auth.is_local(request):
+        raise HTTPException(403, "Tài khoản quản trị đầu tiên chỉ tạo được trên chính máy tính chạy ứng dụng.")
+    try:
+        user = auth.setup_admin(body.username, body.password, body.display_name)
+    except auth.AuthError as exc:
+        _bad(exc)
+    _start_session(request, response, user, remember=True)
+    return {"user": user}
+
+
+@app.post("/api/auth/register")
+def auth_register(body: SetupIn, request: Request, response: Response):
+    if auth.user_count() == 0:
+        raise HTTPException(400, "Hãy tạo tài khoản quản trị trước.")
+    if not auth.registration_open():
+        raise HTTPException(403, "Đăng ký đang tắt - liên hệ quản trị viên để được tạo tài khoản.")
+    ip = auth.client_ip(request)
+    if auth.login_blocked(f"reg:{ip}"):
+        raise HTTPException(429, "Thao tác quá nhiều - thử lại sau.")
+    auth._record_failure(f"reg:{ip}")  # noqa: SLF001 - giới hạn số tài khoản tạo từ một địa chỉ
+    try:
+        user = auth.create_user(body.username, body.password, body.display_name)
+    except auth.AuthError as exc:
+        _bad(exc)
+    _start_session(request, response, user, remember=True)
+    return {"user": user}
 
 
 @app.post("/api/auth/login")
 def auth_login(body: LoginIn, request: Request, response: Response):
-    ip = security.client_ip(request)
-    wait = security.login_blocked(ip)
-    if wait:
-        raise HTTPException(429, f"Sai mật khẩu quá nhiều lần - thử lại sau {wait // 60 + 1} phút.")
-    if not security.password_set():
-        raise HTTPException(403, "Chưa đặt mật khẩu - hãy đặt trên máy tính chạy ứng dụng.")
-    if not security.check_password(body.password):
-        security.record_failure(ip)
-        raise HTTPException(401, "Sai mật khẩu.")
-    security.clear_failures(ip)
-    https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
-    response.set_cookie(security.COOKIE, security.make_token(), max_age=security.SESSION_SECONDS,
-                        httponly=True, samesite="lax", secure=https, path="/")
-    return {"ok": True}
+    try:
+        user = auth.authenticate(body.username, body.password, auth.client_ip(request))
+    except auth.AuthError as exc:
+        code = 429 if "quá nhiều" in str(exc) else 401
+        raise HTTPException(code, str(exc)) from exc
+    _start_session(request, response, user, body.remember)
+    return {"user": user}
 
 
 @app.post("/api/auth/logout")
-def auth_logout(response: Response):
-    response.delete_cookie(security.COOKIE, path="/")
+def auth_logout(request: Request, response: Response):
+    auth.end_session(request.cookies.get(auth.COOKIE))
+    response.delete_cookie(auth.COOKIE, path="/")
     return {"ok": True}
 
 
 @app.post("/api/auth/password")
-def auth_password(body: PasswordIn, request: Request, response: Response):
-    if not security.is_local(request):
-        # từ xa: phải đăng nhập (middleware) VÀ nhập đúng mật khẩu hiện tại
-        if not body.current_password or not security.check_password(body.current_password):
-            raise HTTPException(403, "Mật khẩu hiện tại không đúng.")
+def auth_password(body: PasswordIn, request: Request):
+    me = _me(request)
     try:
-        security.set_password(body.new_password)
-    except ValueError as exc:
+        auth.change_password(me["id"], body.current_password, body.new_password, request.cookies.get(auth.COOKIE))
+    except auth.AuthError as exc:
         _bad(exc)
-    if not security.is_local(request):  # giữ phiên của chính thiết bị vừa đổi mật khẩu
-        response.set_cookie(security.COOKIE, security.make_token(), max_age=security.SESSION_SECONDS,
-                            httponly=True, samesite="lax", path="/")
     return {"ok": True}
 
 
+@app.put("/api/auth/profile")
+def auth_profile(body: ProfileIn, request: Request):
+    return auth.update_user(_me(request)["id"], display_name=body.display_name)
+
+
+@app.get("/api/auth/sessions")
+def auth_sessions(request: Request):
+    return auth.list_sessions(_me(request)["id"], request.cookies.get(auth.COOKIE))
+
+
+@app.delete("/api/auth/sessions/{sid}")
+def auth_revoke(sid: str, request: Request):
+    try:
+        auth.revoke_session(_me(request)["id"], sid)
+    except auth.AuthError as exc:
+        _bad(exc)
+    return {"ok": True}
+
+
+@app.get("/api/admin/users")
+def admin_users(request: Request):
+    _admin(request)
+    return {"users": auth.list_users(), "allow_registration": auth.registration_open()}
+
+
+@app.post("/api/admin/users")
+def admin_create_user(body: UserCreateIn, request: Request):
+    _admin(request)
+    try:
+        return auth.create_user(body.username, body.password, body.display_name, body.role)
+    except auth.AuthError as exc:
+        _bad(exc)
+
+
+@app.patch("/api/admin/users/{uid}")
+def admin_update_user(uid: int, body: UserUpdateIn, request: Request):
+    me = _admin(request)
+    try:
+        return auth.update_user(uid, display_name=body.display_name, role=body.role, disabled=body.disabled,
+                                password=body.password, acting_user_id=me["id"])
+    except auth.AuthError as exc:
+        _bad(exc)
+
+
+@app.delete("/api/admin/users/{uid}")
+def admin_delete_user(uid: int, request: Request):
+    me = _admin(request)
+    try:
+        auth.delete_user(uid, me["id"])
+    except auth.AuthError as exc:
+        _bad(exc)
+    return {"ok": True}
+
+
+@app.put("/api/admin/settings")
+def admin_settings(body: AdminSettingsIn, request: Request):
+    _admin(request)
+    auth.set_registration(body.allow_registration)
+    return {"allow_registration": auth.registration_open()}
+
+
+# ---------------------------------------------------------------- mở trên điện thoại
 @app.get("/api/remote/info")
 def remote_info(request: Request):
     port = request.url.port or settings.port
     return {"lan_urls": [f"http://{ip}:{port}" for ip in remote.lan_addresses()],
-            "tunnel": remote.status(), "password_set": security.password_set(), "local": security.is_local(request)}
+            "lan_enabled": settings.host in {"0.0.0.0", "::"}, "tunnel": remote.status(),
+            "local": auth.is_local(request)}
 
 
 @app.post("/api/remote/tunnel/start")
 async def tunnel_start(request: Request):
-    _require_local(request)
-    if not security.password_set():
-        raise HTTPException(400, "Hãy đặt mật khẩu trước khi mở truy cập qua Internet.")
+    _admin(request)
+    if not auth.is_local(request):
+        raise HTTPException(403, "Chỉ bật được trên chính máy tính chạy ứng dụng.")
     return await asyncio.to_thread(remote.start, request.url.port or settings.port)
 
 
 @app.post("/api/remote/tunnel/stop")
 def tunnel_stop(request: Request):
-    _require_local(request)
+    _admin(request)
     return remote.stop()
 
 
@@ -201,7 +340,7 @@ def status():
             "ai_enabled": settings.has_anthropic_credentials, "ai_model": settings.agent_model,
             "live_trading_allowed": settings.allow_live_trading,
             "autotrader": {"config": engine.load_config().__dict__,
-                           "last_run": get_db().get_kv("autotrader_last_run")}}
+                           "last_run": engine.last_run()}}
 
 
 @app.post("/api/data/health-check")
@@ -225,8 +364,9 @@ def get_universe():
 
 
 @app.get("/api/events")
-def events(limit: int = 50):
-    return get_db().query("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
+def events(request: Request, limit: int = 50):
+    return get_db().query("SELECT * FROM events WHERE user_id=? ORDER BY id DESC LIMIT ?",
+                          (request.state.user["id"], limit))
 
 
 # ---------------------------------------------------------------- market & stocks

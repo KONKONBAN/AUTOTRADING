@@ -17,6 +17,7 @@ from datetime import date
 import numpy as np
 
 from ..config import settings
+from ..context import current_user_id
 from ..data import providers, universe
 from ..db import Database, get_db
 from ..utils import vn_num
@@ -88,32 +89,50 @@ class LiveBrokerAdapter(BrokerBase):
 class PaperBroker(BrokerBase):
     name = "paper"
 
+    """Tài khoản giao dịch giấy của NGƯỜI DÙNG HIỆN TẠI (lấy từ ngữ cảnh đăng nhập)."""
+
     def __init__(self, db: Database | None = None, fee_rate: float = vn_rules.DEFAULT_FEE_RATE):
         self.db = db or get_db()
         self.fee_rate = fee_rate
-        if self.db.get_kv("paper_cash") is None:
-            self.reset(settings.paper_initial_cash)
 
     # ------------------------------------------------------------------ state
+    @property
+    def uid(self) -> int:
+        return current_user_id()
+
+    def _kv(self, key: str, default=None):
+        return self.db.get_user_kv(self.uid, key, default)
+
+    def _set_kv(self, key: str, value) -> None:
+        self.db.set_user_kv(self.uid, key, value)
+
+    def _ensure(self) -> None:
+        """Tài khoản mới: khởi tạo vốn ban đầu."""
+        if self._kv("paper_cash") is None:
+            self.reset(settings.paper_initial_cash)
+
     def reset(self, initial_cash: float) -> None:
+        uid = self.uid
         with _ORDER_LOCK:
-            self.db.execute("DELETE FROM lots")
-            self.db.execute("DELETE FROM orders WHERE broker='paper'")
-            self.db.execute("DELETE FROM equity_history")
-            self.db.execute("UPDATE proposals SET status='expired' WHERE status IN ('pending', 'executing')")
-            self.db.set_kv("paper_cash", float(initial_cash))
-            self.db.set_kv("paper_initial_cash", float(initial_cash))
-            self.db.set_kv("paper_realized_pnl", 0.0)
+            self.db.execute("DELETE FROM lots WHERE user_id=?", (uid,))
+            self.db.execute("DELETE FROM orders WHERE broker='paper' AND user_id=?", (uid,))
+            self.db.execute("DELETE FROM equity_history WHERE user_id=?", (uid,))
+            self.db.execute("UPDATE proposals SET status='expired' WHERE status IN ('pending', 'executing') "
+                            "AND user_id=?", (uid,))
+            self._set_kv("paper_cash", float(initial_cash))
+            self._set_kv("paper_initial_cash", float(initial_cash))
+            self._set_kv("paper_realized_pnl", 0.0)
 
     @property
     def cash(self) -> float:
-        return float(self.db.get_kv("paper_cash", 0.0))
+        self._ensure()
+        return float(self._kv("paper_cash", 0.0))
 
     def _set_cash(self, value: float) -> None:
-        self.db.set_kv("paper_cash", float(value))
+        self._set_kv("paper_cash", float(value))
 
     def positions(self, prices: dict[str, float] | None = None) -> list[dict]:
-        lots = self.db.query("SELECT * FROM lots ORDER BY ticker, buy_date")
+        lots = self.db.query("SELECT * FROM lots WHERE user_id=? ORDER BY ticker, buy_date", (self.uid,))
         today = date.today()
         grouped: dict[str, dict] = {}
         for lot in lots:
@@ -146,15 +165,15 @@ class PaperBroker(BrokerBase):
         pos = self.positions(prices)
         mv = sum(p["market_value"] for p in pos)
         equity = self.cash + mv
-        initial = float(self.db.get_kv("paper_initial_cash", settings.paper_initial_cash))
+        initial = float(self._kv("paper_initial_cash", settings.paper_initial_cash))
         for p in pos:
             p["weight"] = p["market_value"] / equity if equity else 0
-        hist = self.db.query("SELECT date, equity, cash FROM equity_history ORDER BY date")
+        hist = self.db.query("SELECT date, equity, cash FROM equity_history WHERE user_id=? ORDER BY date", (self.uid,))
         peak = max([h["equity"] for h in hist] + [equity, initial])
         return {
             "broker": self.name, "cash": self.cash, "market_value": mv, "equity": equity,
             "initial_cash": initial, "total_return": equity / initial - 1 if initial else 0,
-            "realized_pnl": float(self.db.get_kv("paper_realized_pnl", 0.0)),
+            "realized_pnl": float(self._kv("paper_realized_pnl", 0.0)),
             "unrealized_pnl": sum(p["unrealized_pnl"] for p in pos),
             "drawdown": equity / peak - 1 if peak else 0,
             "exposure": mv / equity if equity else 0, "positions": pos, "equity_history": hist,
@@ -162,11 +181,12 @@ class PaperBroker(BrokerBase):
 
     def snapshot_equity(self) -> None:
         acc = self.account()
-        self.db.execute("INSERT OR REPLACE INTO equity_history(date, equity, cash) VALUES(?,?,?)",
-                        (date.today().isoformat(), acc["equity"], acc["cash"]))
+        self.db.execute("INSERT OR REPLACE INTO equity_history(user_id, date, equity, cash) VALUES(?,?,?,?)",
+                        (self.uid, date.today().isoformat(), acc["equity"], acc["cash"]))
 
     def orders(self, limit: int = 200) -> list[dict]:
-        return self.db.query("SELECT * FROM orders WHERE broker='paper' ORDER BY id DESC LIMIT ?", (limit,))
+        return self.db.query("SELECT * FROM orders WHERE broker='paper' AND user_id=? ORDER BY id DESC LIMIT ?",
+                             (self.uid, limit))
 
     # ------------------------------------------------------------------ orders
     def _validate(self, ticker: str, side: str, quantity: int, price: float, reference: float) -> None:
@@ -224,16 +244,17 @@ class PaperBroker(BrokerBase):
                 raise OrderError(f"Không đủ tiền: cần {vn_num(need)}đ, có {vn_num(self.cash)}đ")
             self._set_cash(self.cash - need)
             self.db.execute(
-                "INSERT INTO lots(ticker, quantity, price, buy_date, stop_loss, take_profit, highest) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (ticker, quantity, (value + costs["total"]) / quantity, today, stop_loss, take_profit, price))
+                "INSERT INTO lots(user_id, ticker, quantity, price, buy_date, stop_loss, take_profit, highest) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (self.uid, ticker, quantity, (value + costs["total"]) / quantity, today, stop_loss, take_profit, price))
         else:
             pos = next((p for p in self.positions({ticker: price}) if p["ticker"] == ticker), None)
             if not pos or pos["sellable"] < quantity:
                 raise OrderError(f"Không đủ cổ phiếu {ticker} khả dụng để bán (T+2): "
                                  f"có {pos['sellable'] if pos else 0}")
             remaining, cost_basis = quantity, 0.0
-            for lot in self.db.query("SELECT * FROM lots WHERE ticker=? ORDER BY buy_date, id", (ticker,)):
+            for lot in self.db.query("SELECT * FROM lots WHERE user_id=? AND ticker=? ORDER BY buy_date, id",
+                                     (self.uid, ticker)):
                 if remaining <= 0:
                     break
                 if business_days_between(date.fromisoformat(lot["buy_date"]), date.today()) < vn_rules.SETTLEMENT_DAYS:
@@ -247,12 +268,12 @@ class PaperBroker(BrokerBase):
                     self.db.execute("UPDATE lots SET quantity=? WHERE id=?", (lot["quantity"] - take, lot["id"]))
             proceeds = value - costs["total"]
             self._set_cash(self.cash + proceeds)
-            realized = float(self.db.get_kv("paper_realized_pnl", 0.0)) + proceeds - cost_basis
-            self.db.set_kv("paper_realized_pnl", realized)
+            realized = float(self._kv("paper_realized_pnl", 0.0)) + proceeds - cost_basis
+            self._set_kv("paper_realized_pnl", realized)
         cur = self.db.execute(
-            "INSERT INTO orders(created_at, ticker, side, quantity, price, status, source, reason, fee, tax, filled_at, broker) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (time.time(), ticker, side, quantity, price, "FILLED", source, reason, costs["fee"], costs["tax"],
+            "INSERT INTO orders(user_id, created_at, ticker, side, quantity, price, status, source, reason, fee, tax, "
+            "filled_at, broker) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (self.uid, time.time(), ticker, side, quantity, price, "FILLED", source, reason, costs["fee"], costs["tax"],
              time.time(), self.name))
         self.db.log_event("trade", f"{side} {quantity} {ticker} @ {vn_num(price)}", {"source": source, "reason": reason})
         return {"id": cur.lastrowid, "ticker": ticker, "side": side, "quantity": quantity, "price": price,
@@ -261,11 +282,12 @@ class PaperBroker(BrokerBase):
     def update_risk_levels(self, ticker: str, stop_loss: float | None = None,
                            take_profit: float | None = None, highest: float | None = None) -> None:
         if stop_loss is not None:
-            self.db.execute("UPDATE lots SET stop_loss=? WHERE ticker=?", (stop_loss, ticker))
+            self.db.execute("UPDATE lots SET stop_loss=? WHERE user_id=? AND ticker=?", (stop_loss, self.uid, ticker))
         if take_profit is not None:
-            self.db.execute("UPDATE lots SET take_profit=? WHERE ticker=?", (take_profit, ticker))
+            self.db.execute("UPDATE lots SET take_profit=? WHERE user_id=? AND ticker=?", (take_profit, self.uid, ticker))
         if highest is not None:
-            self.db.execute("UPDATE lots SET highest=MAX(COALESCE(highest,0), ?) WHERE ticker=?", (highest, ticker))
+            self.db.execute("UPDATE lots SET highest=MAX(COALESCE(highest,0), ?) WHERE user_id=? AND ticker=?",
+                            (highest, self.uid, ticker))
 
 
 _broker: PaperBroker | None = None

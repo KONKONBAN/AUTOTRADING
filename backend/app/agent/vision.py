@@ -16,6 +16,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from ..analysis import technical
+from ..context import current_user_id
 from ..data import fundamentals, providers
 from ..db import get_db
 from . import llm
@@ -125,14 +126,16 @@ def analyze_chart(files: list[tuple[bytes, str]], ticker: str | None = None, tim
                          if diff <= 1 else
                          "Hai góc nhìn trái chiều - nên chờ thêm tín hiệu xác nhận trước khi giao dịch."),
             }
-    cur = get_db().execute("INSERT INTO chart_analyses(created_at, ticker, timeframe, result) VALUES(?,?,?,?)",
-                           (time.time(), tk or None, timeframe, json.dumps(result, ensure_ascii=False)))
+    cur = get_db().execute("INSERT INTO chart_analyses(user_id, created_at, ticker, timeframe, result) "
+                           "VALUES(?,?,?,?,?)", (current_user_id(), time.time(), tk or None, timeframe,
+                                                 json.dumps(result, ensure_ascii=False)))
     result["id"] = cur.lastrowid
     return result
 
 
 def recent_chart_analyses(limit: int = 20) -> list[dict]:
-    rows = get_db().query("SELECT * FROM chart_analyses ORDER BY id DESC LIMIT ?", (limit,))
+    rows = get_db().query("SELECT * FROM chart_analyses WHERE user_id=? ORDER BY id DESC LIMIT ?",
+                          (current_user_id(), limit))
     return [{**r, "result": json.loads(r["result"])} for r in rows]
 
 

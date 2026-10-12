@@ -1,4 +1,5 @@
 import pytest
+from conftest import login
 from fastapi.testclient import TestClient
 from make_sample_xlsx import vietstock_like
 
@@ -9,7 +10,7 @@ from app.main import app
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as c:
-        yield c
+        yield login(c)
 
 
 def test_excel_parser_vietstock_layout():

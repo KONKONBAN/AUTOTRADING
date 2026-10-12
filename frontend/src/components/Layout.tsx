@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
-  Bot, BookOpen, Database, Filter, LayoutDashboard, LineChart, Menu, Moon, PiggyBank, RefreshCw, Search, Smartphone, Sun, Wallet, Zap,
+  Bot, BookOpen, Database, Filter, LayoutDashboard, LineChart, LogOut, Menu, Moon, PiggyBank, RefreshCw, Search, Settings as SettingsIcon, Sun, Wallet, Zap,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useStatus } from "../lib/status";
 import { useTheme } from "../lib/theme";
 import { cls, sourceLabel } from "../lib/format";
+import { useAuth } from "./AuthGate";
 import { Badge, TickerLogo, useToast } from "./ui";
 
 type NavItem = { to: string; label: string; icon: LucideIcon; end?: boolean; mobile?: string };
@@ -39,7 +40,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Dữ liệu & cài đặt",
     items: [
       { to: "/data", label: "Dữ liệu & nhập liệu", icon: Database },
-      { to: "/settings", label: "Cài đặt & điện thoại", icon: Smartphone },
+      { to: "/settings", label: "Cài đặt & tài khoản", icon: SettingsIcon },
     ],
   },
 ];
@@ -116,7 +117,15 @@ function TickerSearch() {
   );
 }
 
+export function Avatar({ name, size = 34 }: { name: string; size?: number }) {
+  const parts = name.trim().split(/\s+/);
+  const initials = ((parts.length > 1 ? parts[parts.length - 2][0] : "") + (parts[parts.length - 1]?.[0] ?? "?")).toUpperCase();
+  return <span className="avatar-chip" style={{ width: size, height: size, fontSize: size * 0.38 }}>{initials}</span>;
+}
+
 export default function Layout({ children }: { children: ReactNode }) {
+  const { user, logout } = useAuth();
+  const nav = useNavigate();
   const { theme, toggle } = useTheme();
   const { status, refresh } = useStatus();
   const toast = useToast();
@@ -159,7 +168,17 @@ export default function Layout({ children }: { children: ReactNode }) {
           </div>
         ))}
         <div className="sidebar-foot">
-          <div className="row between">
+          <div className="user-card">
+            <button className="user-link" onClick={() => nav("/settings")} title="Cài đặt tài khoản">
+              <Avatar name={user.display_name} />
+              <span className="grow" style={{ minWidth: 0 }}>
+                <b className="ellipsis">{user.display_name}</b>
+                <span className="tiny subtle">{user.role === "admin" ? "Quản trị viên" : "Nhà đầu tư"} · @{user.username}</span>
+              </span>
+            </button>
+            <button className="btn icon ghost sm" title="Đăng xuất" onClick={logout}><LogOut size={15} /></button>
+          </div>
+          <div className="row between" style={{ marginTop: 10 }}>
             <span>Nguồn dữ liệu</span>
             <Badge tone={demo ? "warn" : "up"}><span className={cls("dot", !demo && "pulse")} />{sourceLabel(src)}</Badge>
           </div>
@@ -181,6 +200,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <button className="btn icon ghost" title="Đổi giao diện sáng/tối" onClick={toggle}>
             {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
           </button>
+          <button className="show-mobile avatar-btn" title="Tài khoản" onClick={() => nav("/settings")}><Avatar name={user.display_name} size={32} /></button>
         </header>
         <main className="content">{children}</main>
       </div>

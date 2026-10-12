@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
 from .. import services
+from ..context import current_user_id
 from ..data import providers, universe
 from ..db import get_db
 from ..utils import vn_num, vn_pct
@@ -33,7 +34,7 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class AutoTraderConfig:
-    mode: str = "suggest"                 # off | suggest | auto_paper
+    mode: str = "off"                     # off | suggest | auto_paper (tài khoản mới: TẮT cho tới khi bật)
     universe: str = "ALL"                 # ALL | VN30 | danh sách mã, ví dụ "FPT,HPG,MWG"
     max_positions: int = 8
     max_weight: float = 0.20              # "Không đầu tư toàn bộ vốn vào một cổ phiếu"
@@ -51,7 +52,8 @@ class AutoTraderConfig:
 
 
 def load_config() -> AutoTraderConfig:
-    raw = get_db().get_kv("autotrader_config") or {}
+    """Cấu hình Auto-Trader của tài khoản đang đăng nhập."""
+    raw = get_db().get_user_kv(current_user_id(), "autotrader_config") or {}
     cfg = AutoTraderConfig()
     for k, v in raw.items():
         if hasattr(cfg, k):
@@ -74,7 +76,7 @@ def save_config(data: dict) -> AutoTraderConfig:
         setattr(cfg, k, v)
     if cfg.mode not in {"off", "suggest", "auto_paper"}:
         raise ValueError("mode phải là off | suggest | auto_paper")
-    get_db().set_kv("autotrader_config", asdict(cfg))
+    get_db().set_user_kv(current_user_id(), "autotrader_config", asdict(cfg))
     return cfg
 
 
@@ -208,7 +210,8 @@ def run_cycle(cfg: AutoTraderConfig | None = None, force_mode: str | None = None
     db = get_db()
     if mode in {"suggest", "auto_paper"}:
         # đề xuất cũ của Auto-Trader được thay bằng kế hoạch mới (tránh trùng lặp, mua gấp đôi)
-        db.execute("UPDATE proposals SET status='expired' WHERE status='pending' AND source='autotrader'")
+        db.execute("UPDATE proposals SET status='expired' WHERE status='pending' AND source='autotrader' "
+                   "AND user_id=?", (current_user_id(),))
     plan = plan_cycle(cfg)
     broker = get_broker()
     executed, proposed = [], []
@@ -226,22 +229,27 @@ def run_cycle(cfg: AutoTraderConfig | None = None, force_mode: str | None = None
                 executed.append({**act, "error": str(exc)})
         elif mode == "suggest":
             cur = db.execute(
-                "INSERT INTO proposals(created_at, ticker, side, quantity, price, stop_loss, take_profit, reason, source) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
-                (time.time(), act["ticker"], act["side"], act["quantity"], act["price"],
+                "INSERT INTO proposals(user_id, created_at, ticker, side, quantity, price, stop_loss, take_profit, "
+                "reason, source) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (current_user_id(), time.time(), act["ticker"], act["side"], act["quantity"], act["price"],
                  act.get("stop_loss"), act.get("take_profit"), act["reason"], "autotrader"))
             proposed.append({**act, "proposal_id": cur.lastrowid})
     broker.snapshot_equity()
-    db.set_kv("autotrader_last_run", plan["time"])
+    db.set_user_kv(current_user_id(), "autotrader_last_run", plan["time"])
     db.log_event("autotrader", f"Chu kỳ {mode}: {len(plan['actions'])} hành động", {"notes": plan["notes"]})
     return {**plan, "mode": mode, "executed": executed, "proposed": proposed}
 
 
 # ------------------------------------------------------------------ proposals
 def list_proposals(status: str | None = "pending") -> list[dict]:
+    uid = current_user_id()
     if status:
-        return get_db().query("SELECT * FROM proposals WHERE status=? ORDER BY id DESC", (status,))
-    return get_db().query("SELECT * FROM proposals ORDER BY id DESC LIMIT 200")
+        return get_db().query("SELECT * FROM proposals WHERE user_id=? AND status=? ORDER BY id DESC", (uid, status))
+    return get_db().query("SELECT * FROM proposals WHERE user_id=? ORDER BY id DESC LIMIT 200", (uid,))
+
+
+def last_run() -> str | None:
+    return get_db().get_user_kv(current_user_id(), "autotrader_last_run")
 
 
 SLIPPAGE = 0.02  # khi duyệt: chấp nhận giá hiện tại xấu hơn giá đề xuất tối đa 2%
@@ -266,8 +274,8 @@ def _approval_limit(p: dict) -> float | None:
 def decide_proposal(pid: int, approve: bool) -> dict:
     db = get_db()
     # Giành quyền xử lý NGUYÊN TỬ: chỉ một yêu cầu chuyển được trạng thái pending → executing/rejected
-    cur = db.execute("UPDATE proposals SET status=? WHERE id=? AND status='pending'",
-                     ("executing" if approve else "rejected", pid))
+    cur = db.execute("UPDATE proposals SET status=? WHERE id=? AND user_id=? AND status='pending'",
+                     ("executing" if approve else "rejected", pid, current_user_id()))
     if cur.rowcount == 0:
         raise ValueError("Đề xuất không tồn tại hoặc đã được xử lý")
     if not approve:
@@ -295,8 +303,8 @@ def create_proposal(ticker: str, side: str, quantity: int, price: float | None, 
     if ticker not in universe.UNIVERSE and providers._imported_history(ticker) is None:  # noqa: SLF001
         raise ValueError(f"Mã {ticker} không có trong danh sách theo dõi (có thể gõ nhầm)")
     cur = get_db().execute(
-        "INSERT INTO proposals(created_at, ticker, side, quantity, price, stop_loss, take_profit, reason, source) "
-        "VALUES(?,?,?,?,?,?,?,?,?)",
-        (time.time(), ticker, side, int(quantity), price, stop_loss, take_profit, reason, source))
+        "INSERT INTO proposals(user_id, created_at, ticker, side, quantity, price, stop_loss, take_profit, reason, "
+        "source) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (current_user_id(), time.time(), ticker, side, int(quantity), price, stop_loss, take_profit, reason, source))
     return {"proposal_id": cur.lastrowid, "status": "pending",
             "message": "Đã tạo đề xuất lệnh - cần người dùng duyệt trên tab Giao dịch."}

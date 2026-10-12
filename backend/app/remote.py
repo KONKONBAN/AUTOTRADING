@@ -4,7 +4,7 @@
 2. Qua Internet (4G, ở bất cứ đâu): đường hầm nhanh Cloudflare (cloudflared, miễn phí, không cần tài khoản)
    tạo địa chỉ https://<ngẫu-nhiên>.trycloudflare.com trỏ về máy tính đang chạy ứng dụng.
    Địa chỉ đổi mỗi lần mở đường hầm; máy tính phải bật và đang chạy ứng dụng.
-Cả hai cách đều bắt buộc mật khẩu (xem security.py).
+Cả hai cách đều bắt buộc đăng nhập tài khoản (xem auth.py).
 """
 
 from __future__ import annotations

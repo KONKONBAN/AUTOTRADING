@@ -1,27 +1,31 @@
 import { useEffect, useState } from "react";
-import { Copy, Globe, KeyRound, LogOut, RefreshCw, Smartphone, Wifi } from "lucide-react";
+import { Copy, Globe, KeyRound, LogOut, Monitor, RefreshCw, Shield, Smartphone, Trash2, UserPlus, Users, Wifi } from "lucide-react";
 import qrcode from "qrcode-generator";
+import { useAuth } from "../components/AuthGate";
+import { Alert, Badge, Card, Field, Loading, Switch, Tabs, useToast } from "../components/ui";
 import { api } from "../lib/api";
-import { Alert, Badge, Card, Field, Loading, useToast } from "../components/ui";
 
 type Tunnel = { running: boolean; starting: boolean; url: string | null; error: string | null; installed: boolean; log: string[] };
-type Info = { lan_urls: string[]; tunnel: Tunnel; password_set: boolean; local: boolean };
-type AuthStatus = { local: boolean; password_set: boolean; password_from_env: boolean; authenticated: boolean };
+type Info = { lan_urls: string[]; lan_enabled: boolean; tunnel: Tunnel; local: boolean };
+type Session = { id: string; created_at: number; last_seen_at: number; user_agent: string; ip: string; current: boolean };
+type UserRow = { id: number; username: string; display_name: string; role: "admin" | "user"; disabled: boolean; created_at: number; last_login_at: number | null };
 
-function QR({ text, size = 180 }: { text: string; size?: number }) {
+const when = (t: number | null) => (t ? new Date(t * 1000).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" }) : "—");
+const device = (ua: string) =>
+  /iPhone|iPad/.test(ua) ? "iPhone / iPad" : /Android/.test(ua) ? "Điện thoại Android" : /Windows/.test(ua) ? "Máy tính Windows"
+    : /Mac OS/.test(ua) ? "Máy Mac" : /Linux/.test(ua) ? "Máy Linux" : "Thiết bị khác";
+
+function QR({ text, size = 168 }: { text: string; size?: number }) {
   const q = qrcode(0, "M");
   q.addData(text);
   q.make();
-  return (
-    <div style={{ background: "#fff", padding: 8, borderRadius: 12, width: size, height: size, flex: "none" }}
-      dangerouslySetInnerHTML={{ __html: q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }) }} />
-  );
+  return <div className="qr" style={{ width: size, height: size }} dangerouslySetInnerHTML={{ __html: q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }) }} />;
 }
 
 function UrlBox({ url }: { url: string }) {
   const toast = useToast();
   return (
-    <div className="row wrap" style={{ gap: 16, alignItems: "flex-start" }}>
+    <div className="row wrap" style={{ gap: 18, alignItems: "flex-start" }}>
       <QR text={url} />
       <div className="col" style={{ minWidth: 0, flex: 1 }}>
         <div className="small muted">Quét mã QR bằng camera điện thoại, hoặc mở địa chỉ:</div>
@@ -33,60 +37,142 @@ function UrlBox({ url }: { url: string }) {
   );
 }
 
-function PasswordCard({ auth, onChanged }: { auth: AuthStatus; onChanged: () => void }) {
+// ------------------------------------------------------------------ Tài khoản của tôi
+function MyAccount() {
+  const { user, refresh, logout } = useAuth();
   const toast = useToast();
+  const [name, setName] = useState(user.display_name);
   const [cur, setCur] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
-  const [busy, setBusy] = useState(false);
-  const save = async () => {
-    if (pw.length < 6) return toast("err", "Mật khẩu cần ít nhất 6 ký tự.");
-    if (pw !== pw2) return toast("err", "Hai lần nhập mật khẩu không khớp.");
-    setBusy(true);
+  const [sessions, setSessions] = useState<Session[] | null>(null);
+  const loadSessions = () => api.get<Session[]>("/api/auth/sessions").then(setSessions).catch(() => {});
+  useEffect(() => { loadSessions(); }, []);
+  const saveName = async () => {
+    try { await api.put("/api/auth/profile", { display_name: name }); refresh(); toast("ok", "Đã lưu tên hiển thị."); }
+    catch (e: any) { toast("err", e.message); }
+  };
+  const changePw = async () => {
+    if (pw !== pw2) return toast("err", "Hai lần nhập mật khẩu mới không khớp.");
     try {
-      await api.post("/api/auth/password", { new_password: pw, current_password: cur || null });
-      toast("ok", auth.password_set ? "Đã đổi mật khẩu - các thiết bị khác cần đăng nhập lại." : "Đã đặt mật khẩu.");
+      await api.post("/api/auth/password", { current_password: cur, new_password: pw });
       setCur(""); setPw(""); setPw2("");
-      onChanged();
-    } catch (e: any) {
-      toast("err", e.message);
-    } finally {
-      setBusy(false);
-    }
+      toast("ok", "Đã đổi mật khẩu - các thiết bị khác đã được đăng xuất.");
+      loadSessions();
+    } catch (e: any) { toast("err", e.message); }
+  };
+  const revoke = async (id: string) => {
+    await api.del(`/api/auth/sessions/${id}`).catch((e) => toast("err", e.message));
+    loadSessions();
   };
   return (
-    <Card title="1. Mật khẩu truy cập từ xa" icon={<KeyRound size={16} />}
-      actions={auth.password_set ? <Badge tone="up">Đã đặt</Badge> : <Badge tone="warn">Chưa đặt</Badge>}>
-      {auth.password_from_env ? (
-        <Alert kind="info">Mật khẩu đang được đặt bằng <code>APP_PASSWORD</code> trong file <code>.env</code> - sửa ở đó rồi khởi động lại ứng dụng.</Alert>
-      ) : (
+    <div className="grid g2">
+      <Card title="Hồ sơ" icon={<Shield size={16} />} actions={<Badge tone={user.role === "admin" ? "brand" : ""}>{user.role === "admin" ? "Quản trị viên" : "Người dùng"}</Badge>}>
         <div className="col" style={{ gap: 12 }}>
-          <div className="small muted">Điện thoại và mọi thiết bị khác phải nhập mật khẩu này. Trên chính máy tính này bạn không cần đăng nhập.
-            Hãy dùng mật khẩu mạnh (≥ 10 ký tự, có chữ và số) vì địa chỉ Internet có thể bị người khác dò thấy.</div>
-          {!auth.local && auth.password_set && (
-            <Field label="Mật khẩu hiện tại"><input className="input" type="password" value={cur} onChange={(e) => setCur(e.target.value)} /></Field>
-          )}
+          <Field label="Tên đăng nhập"><input className="input" value={user.username} disabled /></Field>
+          <Field label="Tên hiển thị"><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+          <div className="row"><button className="btn primary" onClick={saveName} disabled={!name.trim() || name === user.display_name}>Lưu</button>
+            <button className="btn ghost" onClick={logout}><LogOut size={15} /> Đăng xuất</button></div>
+        </div>
+      </Card>
+      <Card title="Đổi mật khẩu" icon={<KeyRound size={16} />}>
+        <div className="col" style={{ gap: 12 }}>
+          <Field label="Mật khẩu hiện tại"><input className="input" type="password" autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} /></Field>
           <div className="grid g2" style={{ gap: 10 }}>
-            <Field label={auth.password_set ? "Mật khẩu mới" : "Mật khẩu"}><input className="input" type="password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
+            <Field label="Mật khẩu mới"><input className="input" type="password" autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} /></Field>
             <Field label="Nhập lại"><input className="input" type="password" autoComplete="new-password" value={pw2} onChange={(e) => setPw2(e.target.value)} /></Field>
           </div>
-          <div><button className="btn primary" disabled={busy || !pw} onClick={save}>{auth.password_set ? "Đổi mật khẩu" : "Đặt mật khẩu"}</button></div>
+          <div><button className="btn primary" disabled={!cur || !pw} onClick={changePw}>Đổi mật khẩu</button></div>
         </div>
-      )}
-    </Card>
+      </Card>
+      <Card className="span-2" title="Thiết bị đang đăng nhập" icon={<Monitor size={16} />}>
+        {!sessions ? <Loading height={80} /> : (
+          <div className="table-wrap"><table className="table">
+            <thead><tr><th>Thiết bị</th><th>Địa chỉ IP</th><th>Đăng nhập lúc</th><th>Hoạt động gần nhất</th><th /></tr></thead>
+            <tbody>{sessions.map((s) => (
+              <tr key={s.id}>
+                <td>{device(s.user_agent)} {s.current && <Badge tone="up">Thiết bị này</Badge>}</td>
+                <td className="mono">{s.ip}</td><td>{when(s.created_at)}</td><td>{when(s.last_seen_at)}</td>
+                <td className="num">{!s.current && <button className="btn sm ghost" onClick={() => revoke(s.id)}>Đăng xuất</button>}</td>
+              </tr>))}
+            </tbody></table></div>
+        )}
+      </Card>
+    </div>
   );
 }
 
-export default function Settings() {
+// ------------------------------------------------------------------ Quản lý người dùng (quản trị)
+function UsersAdmin() {
+  const { user: me } = useAuth();
   const toast = useToast();
-  const [auth, setAuth] = useState<AuthStatus | null>(null);
+  const [data, setData] = useState<{ users: UserRow[]; allow_registration: boolean } | null>(null);
+  const [form, setForm] = useState({ display_name: "", username: "", password: "", role: "user" });
+  const load = () => api.get("/api/admin/users").then(setData).catch((e) => toast("err", e.message));
+  useEffect(() => { load(); }, []);
+  const act = async (fn: () => Promise<unknown>, ok: string) => {
+    try { await fn(); toast("ok", ok); load(); } catch (e: any) { toast("err", e.message); }
+  };
+  if (!data) return <Loading />;
+  return (
+    <div className="col" style={{ gap: 16 }}>
+      <Card title="Đăng ký tài khoản" icon={<UserPlus size={16} />}>
+        <div className="row between wrap">
+          <div className="small muted" style={{ maxWidth: 640 }}>Cho phép người khác tự tạo tài khoản ở màn hình đăng nhập.
+            Nên <b>tắt</b> khi ứng dụng đang mở ra Internet - thay vào đó hãy tự tạo tài khoản cho người thân bên dưới.</div>
+          <Switch on={data.allow_registration} onChange={(v) => act(() => api.put("/api/admin/settings", { allow_registration: v }),
+            v ? "Đã bật tự đăng ký" : "Đã tắt tự đăng ký")} />
+        </div>
+      </Card>
+      <Card title="Tạo tài khoản mới" icon={<UserPlus size={16} />}>
+        <div className="grid g4" style={{ gap: 10, alignItems: "end" }}>
+          <Field label="Họ và tên"><input className="input" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} /></Field>
+          <Field label="Tên đăng nhập"><input className="input" autoCapitalize="none" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value.toLowerCase().replace(/\s/g, "") })} /></Field>
+          <Field label="Mật khẩu ban đầu"><input className="input" type="password" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Field>
+          <Field label="Vai trò"><select className="input" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+            <option value="user">Người dùng</option><option value="admin">Quản trị viên</option></select></Field>
+        </div>
+        <div style={{ marginTop: 12 }}><button className="btn primary" disabled={!form.username || !form.password}
+          onClick={() => act(async () => { await api.post("/api/admin/users", form); setForm({ display_name: "", username: "", password: "", role: "user" }); }, "Đã tạo tài khoản")}>
+          <UserPlus size={15} /> Tạo tài khoản</button></div>
+      </Card>
+      <Card title={`Danh sách tài khoản (${data.users.length})`} icon={<Users size={16} />}>
+        <div className="table-wrap"><table className="table">
+          <thead><tr><th>Người dùng</th><th>Vai trò</th><th>Trạng thái</th><th>Đăng nhập gần nhất</th><th className="num">Thao tác</th></tr></thead>
+          <tbody>{data.users.map((u) => (
+            <tr key={u.id}>
+              <td><b>{u.display_name}</b><div className="tiny subtle">@{u.username}{u.id === me.id ? " · bạn" : ""}</div></td>
+              <td><select className="input sm" value={u.role} disabled={u.id === me.id}
+                onChange={(e) => act(() => api.patch(`/api/admin/users/${u.id}`, { role: e.target.value }), "Đã đổi vai trò")}>
+                <option value="user">Người dùng</option><option value="admin">Quản trị viên</option></select></td>
+              <td>{u.disabled ? <Badge tone="down">Đã khóa</Badge> : <Badge tone="up">Hoạt động</Badge>}</td>
+              <td>{when(u.last_login_at)}</td>
+              <td className="num"><div className="row" style={{ justifyContent: "flex-end", gap: 6 }}>
+                {u.id !== me.id && <button className="btn sm" onClick={() => act(() => api.patch(`/api/admin/users/${u.id}`, { disabled: !u.disabled }), u.disabled ? "Đã mở khóa" : "Đã khóa tài khoản")}>{u.disabled ? "Mở khóa" : "Khóa"}</button>}
+                <button className="btn sm" onClick={() => {
+                  const p = window.prompt(`Mật khẩu mới cho @${u.username} (≥ 8 ký tự, có chữ và số):`);
+                  if (p) act(() => api.patch(`/api/admin/users/${u.id}`, { password: p }), "Đã đặt lại mật khẩu");
+                }}>Đặt lại MK</button>
+                {u.id !== me.id && <button className="btn sm ghost" title="Xóa tài khoản và toàn bộ dữ liệu" onClick={() => {
+                  if (window.confirm(`Xóa @${u.username} và TOÀN BỘ danh mục, lệnh, hội thoại của tài khoản này?`))
+                    act(() => api.del(`/api/admin/users/${u.id}`), "Đã xóa tài khoản");
+                }}><Trash2 size={14} /></button>}
+              </div></td>
+            </tr>))}
+          </tbody></table></div>
+      </Card>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ Mở trên điện thoại
+function Phone() {
+  const { user } = useAuth();
+  const toast = useToast();
   const [info, setInfo] = useState<Info | null>(null);
   const [busy, setBusy] = useState(false);
-  const load = () => {
-    api.get<AuthStatus>("/api/auth/status").then(setAuth).catch(() => {});
-    api.get<Info>("/api/remote/info").then(setInfo).catch(() => {});
-  };
-  useEffect(load, []);
+  const load = () => api.get<Info>("/api/remote/info").then(setInfo).catch(() => {});
+  useEffect(() => { load(); }, []);
   const tunnel = async (start: boolean) => {
     setBusy(true);
     try {
@@ -99,73 +185,78 @@ export default function Settings() {
       setBusy(false);
     }
   };
-  const logout = async () => {
-    await api.post("/api/auth/logout").catch(() => {});
-    window.location.href = "/";
-  };
-  if (!auth || !info) return <Loading />;
+  if (!info) return <Loading />;
   const t = info.tunnel;
+  const admin = user.role === "admin";
   return (
     <div className="col" style={{ gap: 16 }}>
-      <div className="page-head">
-        <div>
-          <h1>Cài đặt &amp; điện thoại</h1>
-          <p>Dùng ứng dụng trên điện thoại: máy tính chạy ứng dụng, điện thoại truy cập qua Wi-Fi hoặc Internet (có mật khẩu bảo vệ).</p>
-        </div>
-      </div>
-      {!auth.local && (
-        <Alert kind="info" title="Bạn đang truy cập từ xa">
-          Mở/tắt truy cập Internet chỉ làm được trên máy tính chạy ứng dụng.
-          <div style={{ marginTop: 8 }}><button className="btn sm" onClick={logout}><LogOut size={13} /> Đăng xuất thiết bị này</button></div>
-        </Alert>
-      )}
-      <PasswordCard auth={auth} onChanged={load} />
-      <Card title="2. Mở trên điện thoại qua Internet (4G / mọi nơi)" icon={<Globe size={16} />}
-        actions={t.running ? <Badge tone="up">Đang mở</Badge> : <Badge>Đang tắt</Badge>}>
+      <Alert kind="info" title="Cách hoạt động">
+        Máy tính chạy ứng dụng (phải đang bật); điện thoại truy cập qua Internet hoặc cùng Wi-Fi rồi <b>đăng nhập bằng tài khoản</b> như trên máy tính.
+      </Alert>
+      <Card title="Qua Internet - 4G, ở bất cứ đâu" icon={<Globe size={16} />} actions={t.running ? <Badge tone="up">Đang mở</Badge> : <Badge>Đang tắt</Badge>}>
         <div className="col" style={{ gap: 12 }}>
           <div className="small muted">
-            Dùng đường hầm miễn phí của Cloudflare (không cần tài khoản): tạo địa chỉ <b>https</b> trỏ về máy tính này.
-            Lần đầu ứng dụng tự tải công cụ <code>cloudflared</code> chính thức (~30 MB). Máy tính phải bật và đang chạy ứng dụng;
-            địa chỉ <b>đổi mỗi lần mở lại</b> - quét lại mã QR khi cần.
+            Dùng đường hầm miễn phí của Cloudflare (không cần tài khoản), tạo địa chỉ <b>https</b> trỏ về máy tính này. Lần đầu ứng dụng tự tải
+            công cụ <code>cloudflared</code> chính thức (~30 MB). Địa chỉ <b>đổi mỗi lần mở lại</b>.
           </div>
-          {!info.password_set && <Alert kind="warn">Hãy đặt mật khẩu ở bước 1 trước.</Alert>}
           {t.url && <UrlBox url={t.url} />}
           {t.error && !t.url && <Alert kind={t.running ? "info" : "err"}>{t.error}</Alert>}
-          {auth.local && (
-            <div className="row wrap">
-              {!t.running ? (
-                <button className="btn primary" disabled={busy || !info.password_set} onClick={() => tunnel(true)}>
-                  <Globe size={15} /> {busy ? "Đang mở… (có thể mất 10-30 giây)" : "Mở truy cập qua Internet"}</button>
-              ) : (
-                <button className="btn" disabled={busy} onClick={() => tunnel(false)}>Tắt truy cập Internet</button>
-              )}
-              <button className="btn ghost" onClick={load}><RefreshCw size={14} /> Làm mới</button>
-            </div>
-          )}
+          {!admin ? <div className="small subtle">Chỉ quản trị viên bật/tắt được truy cập Internet.</div>
+            : !info.local ? <div className="small subtle">Bật/tắt trên chính máy tính chạy ứng dụng.</div> : (
+              <div className="row wrap">
+                {!t.running
+                  ? <button className="btn primary" disabled={busy} onClick={() => tunnel(true)}><Globe size={15} /> {busy ? "Đang mở… (10-30 giây)" : "Mở truy cập qua Internet"}</button>
+                  : <button className="btn" disabled={busy} onClick={() => tunnel(false)}>Tắt truy cập Internet</button>}
+                <button className="btn ghost" onClick={load}><RefreshCw size={14} /> Làm mới</button>
+              </div>
+            )}
           {t.log.length > 0 && !t.url && (
             <details><summary className="small subtle">Nhật ký cloudflared</summary>
               <pre className="tiny mono" style={{ whiteSpace: "pre-wrap", maxHeight: 180, overflow: "auto" }}>{t.log.join("\n")}</pre></details>
           )}
         </div>
       </Card>
-      <Card title="3. Cùng mạng Wi-Fi ở nhà" icon={<Wifi size={16} />}>
+      <Card title="Cùng mạng Wi-Fi ở nhà" icon={<Wifi size={16} />} actions={info.lan_enabled ? <Badge tone="up">Đang bật</Badge> : <Badge>Đang tắt</Badge>}>
         <div className="col" style={{ gap: 12 }}>
-          <div className="small muted">
-            Chỉ dùng được khi ứng dụng chạy ở chế độ mở cho mạng nội bộ (chạy <code>run.bat</code> và chọn cho phép điện thoại cùng Wi-Fi,
-            hoặc đặt <code>HOST=0.0.0.0</code> trong <code>.env</code>). Windows có thể hỏi cho phép qua tường lửa - chọn <b>Mạng riêng (Private)</b>.
-          </div>
-          {info.lan_urls.length ? info.lan_urls.slice(0, 2).map((u) => <UrlBox key={u} url={u} />)
-            : <div className="small subtle">Không tìm thấy địa chỉ mạng nội bộ.</div>}
+          {!info.lan_enabled && (
+            <div className="small muted">Mặc định ứng dụng chỉ mở cho chính máy tính. Để điện thoại cùng Wi-Fi truy cập: mở file <code>.env</code> trong thư mục
+              ứng dụng, thêm dòng <code>HOST=0.0.0.0</code>, lưu lại rồi chạy lại <code>run.bat</code>. Khi Windows hỏi tường lửa, chọn <b>Mạng riêng (Private)</b>.</div>
+          )}
+          {info.lan_enabled && (info.lan_urls.length ? info.lan_urls.slice(0, 2).map((u) => <UrlBox key={u} url={u} />)
+            : <div className="small subtle">Không tìm thấy địa chỉ mạng nội bộ.</div>)}
         </div>
       </Card>
-      <Card title="4. Cài như ứng dụng trên điện thoại" icon={<Smartphone size={16} />}>
+      <Card title="Cài như ứng dụng trên điện thoại" icon={<Smartphone size={16} />}>
         <ul className="small" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
           <li><b>Android (Chrome)</b>: mở địa chỉ → menu ⋮ → <b>Thêm vào màn hình chính / Cài đặt ứng dụng</b>.</li>
           <li><b>iPhone (Safari)</b>: mở địa chỉ → nút Chia sẻ → <b>Thêm vào MH chính</b>.</li>
-          <li>Địa chỉ Internet đổi mỗi lần mở đường hầm; muốn địa chỉ cố định hãy dùng Tailscale (miễn phí, cài trên cả máy tính và điện thoại)
-            rồi mở <code>http://&lt;tên-máy-tính&gt;:8000</code>.</li>
+          <li>Muốn địa chỉ cố định: dùng Tailscale (miễn phí, cài trên cả máy tính và điện thoại) rồi mở <code>http://&lt;tên-máy-tính&gt;:8000</code>
+            (kèm <code>HOST=0.0.0.0</code>).</li>
         </ul>
       </Card>
+    </div>
+  );
+}
+
+export default function Settings() {
+  const { user } = useAuth();
+  const [tab, setTab] = useState<"me" | "users" | "phone">("me");
+  return (
+    <div className="col" style={{ gap: 16 }}>
+      <div className="page-head">
+        <div>
+          <h1>Cài đặt</h1>
+          <p>Tài khoản, người dùng và truy cập từ điện thoại.</p>
+        </div>
+      </div>
+      <Tabs value={tab} onChange={setTab} items={[
+        { value: "me", label: "Tài khoản của tôi", icon: <Shield size={15} /> },
+        ...(user.role === "admin" ? [{ value: "users" as const, label: "Quản lý người dùng", icon: <Users size={15} /> }] : []),
+        { value: "phone", label: "Mở trên điện thoại", icon: <Smartphone size={15} /> },
+      ]} />
+      {tab === "me" && <MyAccount />}
+      {tab === "users" && user.role === "admin" && <UsersAdmin />}
+      {tab === "phone" && <Phone />}
     </div>
   );
 }

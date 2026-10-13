@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#f4f7f6" />
+    <meta name="description" content="Phân tích cổ phiếu, quản trị danh mục, giao dịch tự động và AI Agent quản trị tài sản cho nhà đầu tư Việt Nam" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>AutoTrading VN</title>
+    <script>
+      try {
+        const t = localStorage.getItem("theme");
+        const z = localStorage.getItem("text-size");
+        document.documentElement.dataset.theme = t === "dark" ? "dark" : "light";
+        if (z === "lg") document.documentElement.dataset.size = "lg";
+        if (t === "dark") document.querySelector('meta[name="theme-color"]').setAttribute("content", "#0b1110");
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="/assets/index-BR5yV3Vl.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/markdown-DGuX_twn.js">
+    <link rel="modulepreload" crossorigin href="/assets/charts-BM6w49sC.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-DRGYBunu.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

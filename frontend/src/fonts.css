@@ -1,0 +1,129 @@
+/* Font tự lưu trữ (không phụ thuộc Google Fonts, chạy cả khi offline). Sinh từ gói @fontsource, chỉ giữ woff2. */
+/* be-vietnam-pro-vietnamese-400-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-vietnamese-400-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-latin-400-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-latin-400-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-latin-ext-400-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-latin-ext-400-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-vietnamese-500-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-vietnamese-500-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-latin-500-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-latin-500-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-latin-ext-500-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-latin-ext-500-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-vietnamese-600-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-vietnamese-600-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-latin-600-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-latin-600-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-latin-ext-600-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-latin-ext-600-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-vietnamese-700-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-vietnamese-700-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-latin-700-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-latin-700-normal.woff2) format('woff2');
+}
+/* be-vietnam-pro-latin-ext-700-normal */
+@font-face {
+  font-family: 'Be Vietnam Pro';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(../node_modules/@fontsource/be-vietnam-pro/files/be-vietnam-pro-latin-ext-700-normal.woff2) format('woff2');
+}
+/* inter-latin-400-normal */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(../node_modules/@fontsource/inter/files/inter-latin-400-normal.woff2) format('woff2');
+}
+/* inter-latin-500-normal */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url(../node_modules/@fontsource/inter/files/inter-latin-500-normal.woff2) format('woff2');
+}
+/* inter-latin-600-normal */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url(../node_modules/@fontsource/inter/files/inter-latin-600-normal.woff2) format('woff2');
+}
+/* inter-latin-700-normal */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url(../node_modules/@fontsource/inter/files/inter-latin-700-normal.woff2) format('woff2');
+}

@@ -300,8 +300,8 @@ def create_proposal(ticker: str, side: str, quantity: int, price: float | None, 
     ticker, side = normalize_ticker(ticker), side.strip().upper()
     if side not in {"BUY", "SELL"}:
         raise ValueError("side phải là BUY hoặc SELL")
-    if ticker not in universe.UNIVERSE and providers._imported_history(ticker) is None:  # noqa: SLF001
-        raise ValueError(f"Mã {ticker} không có trong danh sách theo dõi (có thể gõ nhầm)")
+    if not universe.is_listed(ticker) or providers.is_index(ticker):
+        raise ValueError(f"Mã {ticker} không có trong danh sách cổ phiếu niêm yết (có thể gõ nhầm)")
     cur = get_db().execute(
         "INSERT INTO proposals(user_id, created_at, ticker, side, quantity, price, stop_loss, take_profit, reason, "
         "source) VALUES(?,?,?,?,?,?,?,?,?,?)",

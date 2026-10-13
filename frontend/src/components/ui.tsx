@@ -273,7 +273,7 @@ export function TickerCell({ ticker, name }: { ticker: string; name?: string }) 
 }
 
 export function SourceBadge({ source }: { source?: string }) {
-  const demo = !source || source.includes("demo");
+  const demo = !source || source.includes("demo") || source === "none";
   return (
     <Badge tone={demo ? "warn" : source?.includes("manual") || source === "imported" ? "info" : "up"}>
       <span className="dot" /> {sourceLabel(source)}

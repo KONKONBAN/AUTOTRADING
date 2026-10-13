@@ -5,7 +5,8 @@ Cấu trúc theo 3 báo cáo cơ bản (FQA - Session 2; KTTC2 - Chương 4):
 - Báo cáo KQKD: NI = REV - COGS - OC - Int - Tax
 - Báo cáo lưu chuyển tiền tệ: NCF = ICF - OCF
 
-Nguồn: TCBS (khi có mạng) → dự phòng dữ liệu DEMO mô phỏng theo đặc thù ngành.
+Nguồn: số liệu người dùng nhập/tải Excel (ưu tiên) → KBS → Vietcap. Dữ liệu DEMO mô phỏng chỉ dùng khi
+DATA_MODE=demo (không bao giờ bịa BCTC khi đang dùng dữ liệu thật).
 """
 
 from __future__ import annotations
@@ -15,13 +16,12 @@ import logging
 import time
 from datetime import date
 
-import httpx
 import numpy as np
 
 from ..config import settings
 from ..db import get_db
-from . import universe
-from .providers import HEADERS, HTTP_TIMEOUT, _seed
+from . import http, universe
+from .providers import _seed
 
 log = logging.getLogger(__name__)
 
@@ -95,96 +95,135 @@ def _demo(ticker: str, years: int = 6) -> list[dict]:
     return rows
 
 
-_tcbs_down_until = 0.0
+# ---------------------------------------------------------------------------
+# BCTC năm tự động: KBS (KB Securities) → Vietcap (VCI). TCBS đã ngừng API công khai (2026).
+# Dữ liệu được dựng thành bảng "chỉ tiêu × năm" rồi đọc bằng CHÍNH bộ nhận diện chỉ tiêu tiếng Việt của tính
+# năng nhập Excel (excel_import) - một bộ quy tắc duy nhất, đã kiểm thử cho cả file người dùng lẫn dữ liệu tự động.
+# ---------------------------------------------------------------------------
+KBS_BASE = "https://kbbuddywts.kbsec.com.vn/iis-server/investment"
+VCI_IQ = "https://iq.vietcap.com.vn/api/iq-insight-service/v1/company"
+VCI_HEADERS = {"Referer": "https://trading.vietcap.com.vn/", "Origin": "https://trading.vietcap.com.vn"}
+FIN_YEARS = 6
+Period = tuple[int, list[tuple[str, object]]]
 
 
-def _tcbs(path: str, ticker: str) -> list[dict]:
-    global _tcbs_down_until
-    if _tcbs_down_until > time.time():
-        raise RuntimeError("TCBS tạm thời không truy cập được")
-    url = f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/finance/{ticker}/{path}"
-    try:
-        r = httpx.get(url, params={"yearly": 1, "isAll": "true"}, headers=HEADERS, timeout=HTTP_TIMEOUT)
-        r.raise_for_status()
-    except (httpx.TransportError, httpx.HTTPStatusError):
-        _tcbs_down_until = time.time() + 300
-        raise
-    data = r.json()
-    return data if isinstance(data, list) else data.get("data", [])
+def _kbs_statement(ticker: str, kind: str) -> list[Period]:
+    """Một loại báo cáo KBS (KQKD | CDKT | LCTT) theo NĂM. API lỗi khi pageSize > 1 nên lấy từng kỳ một."""
+    out: list[Period] = []
+    for page in range(1, FIN_YEARS + 1):
+        params: dict = {"page": page, "pageSize": 1, "type": kind, "unit": 1000, "termtype": 1}
+        params.update({"code": ticker, "termType": 1} if kind == "LCTT" else {"languageid": 1})
+        js = http.get_json(f"{KBS_BASE}/stock/finance-info/{ticker}", params) or {}
+        head = js.get("Head") or []
+        if not head:
+            break
+        h = head[0]
+        try:
+            year = int(str(h.get("YearPeriod"))[:4])
+        except ValueError:
+            break
+        vkey = f"Value{h.get('ID') or 1}"
+        lines = [(r.get("Name") or r.get("NameEn") or "", r.get(vkey, r.get("Value1")))
+                 for rows in (js.get("Content") or {}).values() for r in (rows or [])]
+        lines = [(n, v) for n, v in lines if n]
+        if any(v not in (None, "", 0) for _, v in lines):
+            out.append((year, lines))
+    return out
 
 
-def _g(d: dict, *keys, default=None):
-    for k in keys:
-        if d.get(k) is not None:
-            return d[k]
-    return default
+def _grid(statements: list[list[Period]], unit_line: str | None) -> list[list]:
+    years = sorted({y for st in statements for y, _ in st})
+    grid: list[list] = [[unit_line]] if unit_line else []
+    grid.append(["Chỉ tiêu", *years])
+    for st in statements:
+        values: dict[int, dict[str, object]] = {}
+        order: list[str] = []
+        for y, lines in st:
+            for name, v in lines:
+                values.setdefault(y, {}).setdefault(name, v)
+                if name not in order:
+                    order.append(name)
+        for name in order:
+            grid.append([name, *[values.get(y, {}).get(name) for y in years]])
+    return grid
 
 
-def _live(ticker: str) -> list[dict]:
-    inc = {r["year"]: r for r in _tcbs("incomestatement", ticker)}
-    bal = {r["year"]: r for r in _tcbs("balancesheet", ticker)}
-    try:
-        cf = {r["year"]: r for r in _tcbs("cashflow", ticker)}
-    except Exception:  # noqa: BLE001
-        cf = {}
-    try:
-        ratio = {r["year"]: r for r in _tcbs("financialratio", ticker)}
-    except Exception:  # noqa: BLE001
-        ratio = {}
-    years = sorted(set(inc) & set(bal))[-6:]
-    if not years:
-        raise ValueError("TCBS không có BCTC")
+def _rows_from_grid(grid: list[list]) -> list[dict]:
+    from .excel_import import _parse_grid  # tránh import vòng
+    parsed = _parse_grid(grid)
+    if not parsed:
+        raise ValueError("không nhận diện được cấu trúc BCTC")
     rows = []
-    for y in years:
-        i, b, c, q = inc[y], bal[y], cf.get(y, {}), ratio.get(y, {})
-        ni = float(_g(i, "shareHolderIncome", "postTaxProfit", default=0))
-        assets = float(_g(b, "asset", default=0))
-        equity = float(_g(b, "equity", default=0))
-        liabilities = float(_g(b, "debt", "payable", default=assets - equity))
-        st, lt = _g(b, "shortDebt"), _g(b, "longDebt")
-        st = float(st) if st is not None else None
-        lt = float(lt) if lt is not None else None
-        estimated: list[str] = []
-        if st is not None and lt is not None and liabilities and abs(st + lt - liabilities) <= 0.03 * abs(liabilities):
-            # shortDebt/longDebt là TỔNG Nợ ngắn hạn / Nợ dài hạn (cộng lại = Nợ phải trả), không phải tiền vay
-            current_liab, borrow = st, None
-        else:
-            current_liab = None
-            borrow = (st or 0.0) + (lt or 0.0) if (st is not None or lt is not None) else None
-        if borrow is None:
-            borrow = liabilities * 0.5
-            estimated.append("total_debt")
-        if current_liab is None:
-            current_liab = liabilities * 0.6
-            estimated.append("current_liabilities")
-        interest = abs(float(_g(i, "interestExpense", default=0) or 0))
-        pretax = float(_g(i, "preTaxProfit", default=ni / (1 - TAX_RATE)))
-        eps = float(_g(q, "earningPerShare", default=0) or 0)
-        shares = ni * 1e9 / eps / 1e6 if eps else None
-        rows.append({
-            "year": int(y), "revenue": float(_g(i, "revenue", "operationIncome", default=0) or 0),
-            "gross_profit": float(_g(i, "grossProfit", default=0) or 0),
-            "ebit": pretax + interest, "interest_expense": interest, "pretax_income": pretax,
-            "net_income": ni, "depreciation": 0.0, "total_assets": assets,
-            "total_liabilities": liabilities, "total_debt": borrow, "estimated_fields": estimated,
-            "equity": equity, "current_assets": float(_g(b, "shortAsset", default=0) or 0),
-            "current_liabilities": current_liab,
-            "inventory": float(_g(b, "inventory", default=0) or 0),
-            "cash": float(_g(b, "cash", default=0) or 0),
-            "operating_cf": float(_g(c, "fromSale", default=ni) or ni),
-            "capex": abs(float(_g(c, "investCost", default=0) or 0)),
-            "retained_earnings": float(_g(b, "unDistributedIncome", default=0) or 0),
-            "shares": shares, "eps": eps or None,
-            "bvps": float(_g(q, "bookValuePerShare", default=0) or 0) or None,
-            "dps": float(_g(q, "dividend", default=0) or 0) * 10_000 / 100 if q.get("dividend") else 0.0,
-        })
-    shares = next((r["shares"] for r in reversed(rows) if r["shares"]), None)
-    for r in rows:
-        r["shares"] = r["shares"] or shares
-        if r["shares"]:
-            r["eps"] = r["eps"] or r["net_income"] * 1e9 / (r["shares"] * 1e6)
-            r["bvps"] = r["bvps"] or r["equity"] * 1e9 / (r["shares"] * 1e6)
+    for y in parsed["years"]:
+        try:
+            rows.append(_complete_row({k: v for k, v in y.items() if k == "year" or k in _FIELD_KEYS}))
+        except ValueError:
+            continue  # năm thiếu chỉ tiêu bắt buộc
+    if not rows:
+        raise ValueError("BCTC thiếu các chỉ tiêu bắt buộc")
+    return rows[-FIN_YEARS:]
+
+
+def _kbs_shares(ticker: str) -> float | None:
+    """Số cổ phiếu lưu hành (triệu CP) từ hồ sơ doanh nghiệp KBS."""
+    try:
+        js = http.get_json(f"{KBS_BASE}/stockinfo/profile/{ticker}", {"l": 1}) or {}
+        prof = js.get("data", js) if isinstance(js, dict) else {}
+        n = float(prof.get("KLCPLH") or 0)
+        return n / 1e6 if n > 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _fill_shares(rows: list[dict], shares: float | None) -> None:
+    if not shares:
+        return
+    for i, r in enumerate(rows):
+        if not r.get("shares"):
+            r["shares"] = shares
+            r["eps"] = r["net_income"] * 1e9 / (shares * 1e6)
+            r["bvps"] = r["equity"] * 1e9 / (shares * 1e6)
+            if i < len(rows) - 1:  # số CP hiện tại dùng cho năm cũ → chỉ là ước tính
+                r.setdefault("estimated_fields", []).append("shares")
+
+
+def _live_kbs(ticker: str) -> list[dict]:
+    statements = [_kbs_statement(ticker, k) for k in ("CDKT", "KQKD", "LCTT")]
+    if not statements[0] or not statements[1]:
+        raise ValueError("KBS không có BCTC năm")
+    rows = _rows_from_grid(_grid(statements, "Đơn vị: 1.000 VND"))
+    if not rows[-1].get("shares"):
+        _fill_shares(rows, _kbs_shares(ticker))
     return rows
+
+
+def _live_vci(ticker: str) -> list[dict]:
+    meta = (http.get_json(f"{VCI_IQ}/{ticker}/financial-statement/metrics", headers=VCI_HEADERS) or {}).get("data") or {}
+    statements = []
+    for section in ("BALANCE_SHEET", "INCOME_STATEMENT", "CASH_FLOW"):
+        titles = {m["field"]: (m.get("titleVi") or m.get("fullTitleVi") or m.get("titleEn"))
+                  for m in (meta.get(section) or []) if m.get("field")}
+        js = http.get_json(f"{VCI_IQ}/{ticker}/financial-statement", {"section": section}, headers=VCI_HEADERS) or {}
+        periods: list[Period] = []
+        for rec in ((js.get("data") or {}).get("years") or []):
+            if rec.get("yearReport"):
+                periods.append((int(rec["yearReport"]),
+                                [(titles[k], v) for k, v in rec.items() if k in titles and titles[k]]))
+        statements.append(periods)
+    if not statements[0] or not statements[1]:
+        raise ValueError("Vietcap không có BCTC năm")
+    return _rows_from_grid(_grid(statements, None))  # đơn vị: đoán theo độ lớn số liệu
+
+
+def _live(ticker: str) -> tuple[list[dict], str]:
+    errors = []
+    for src, fn in (("kbs", _live_kbs), ("vci", _live_vci)):
+        try:
+            return fn(ticker), src
+        except Exception as exc:  # noqa: BLE001 - thử nguồn tiếp theo
+            errors.append(f"{src}: {exc}")
+            log.info("BCTC %s lỗi cho %s: %s", src, ticker, exc)
+    raise RuntimeError("; ".join(errors))
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +252,7 @@ MANUAL_FIELDS: list[tuple[str, str, str]] = [
     ("dps", "Cổ tức tiền mặt mỗi cổ phiếu", "đồng/CP"),
 ]
 REQUIRED_FIELDS = ("revenue", "net_income", "total_assets", "equity")
+_FIELD_KEYS = {k for k, _, _ in MANUAL_FIELDS}
 
 
 def _complete_row(r: dict) -> dict:
@@ -303,9 +343,10 @@ def get_financials(ticker: str) -> dict:
     result = None
     if settings.data_mode in {"auto", "live"} and ticker != "VNINDEX":
         try:
-            result = {"source": "tcbs", "rows": _live(ticker)}
+            rows, src = _live(ticker)
+            result = {"source": src, "rows": rows}
         except Exception as exc:  # noqa: BLE001
-            log.info("TCBS BCTC lỗi cho %s: %s", ticker, exc)
+            log.info("Không lấy được BCTC tự động cho %s: %s", ticker, exc)
     if result is None:
         # Chế độ dữ liệu thật: KHÔNG bịa BCTC - để trống để giao diện yêu cầu nhập tay / tải Excel
         result = ({"source": "demo", "rows": _demo(ticker)} if settings.data_mode == "demo"

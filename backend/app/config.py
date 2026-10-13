@@ -39,6 +39,11 @@ class Settings:
     allow_live_trading: bool = _bool("ALLOW_LIVE_TRADING", False)
     autotrader_scheduler: bool = _bool("AUTOTRADER_SCHEDULER", True)
     db_path: Path = ROOT_DIR / os.getenv("DB_PATH", "backend/data/autotrading.sqlite3")
+    # Nguồn dữ liệu CHÍNH THỨC (tùy chọn): SSI FastConnect v3, DNSE OpenAPI - đăng ký tại CTCK tương ứng
+    ssi_api_key: str = os.getenv("SSI_API_KEY", "").strip()
+    ssi_api_secret: str = os.getenv("SSI_API_SECRET", "").strip()
+    dnse_api_key: str = os.getenv("DNSE_API_KEY", "").strip()
+    dnse_api_secret: str = os.getenv("DNSE_API_SECRET", "").strip()
     port: int = int(os.getenv("PORT", "8000"))
     host: str = os.getenv("HOST", "127.0.0.1")
     frontend_dist: Path = ROOT_DIR / "frontend" / "dist"

@@ -9,7 +9,8 @@ import { TimeChart } from "../components/Charts";
 import { Alert, Badge, Card, Empty, ErrorBox, Field, Kpi, Loading, Seg, TickerCell, useAsync, useToast } from "../components/ui";
 
 function Optimizer() {
-  const { universe } = useStatus();
+  const { watch } = useStatus();
+  const [extra, setExtra] = useState("");
   const toast = useToast();
   const [sel, setSel] = useState<string[]>(["FPT", "VCB", "HPG", "MWG", "GAS", "DGC"]);
   const [objective, setObjective] = useState("max_sharpe");
@@ -33,9 +34,12 @@ function Optimizer() {
       hint="Tối đa hệ số Sharpe hoặc tối thiểu phương sai, giới hạn tỷ trọng mỗi mã - 'Đừng bỏ trứng vào một giỏ'. Lợi nhuận kỳ vọng kết hợp định giá + lịch sử.">
       <div className="col" style={{ gap: 14 }}>
         <div className="row wrap" style={{ gap: 6 }}>
-          {universe.map((u) => (
-            <button key={u.ticker} className={cls("chip", sel.includes(u.ticker) && "on")} onClick={() => toggle(u.ticker)}>{u.ticker}</button>
+          {[...watch.map((u) => u.ticker), ...sel.filter((t) => !watch.some((u) => u.ticker === t))].map((t) => (
+            <button key={t} className={cls("chip", sel.includes(t) && "on")} onClick={() => toggle(t)}>{t}</button>
           ))}
+          <form className="row" style={{ gap: 6 }} onSubmit={(e) => { e.preventDefault(); const t = extra.trim().toUpperCase(); if (t && !sel.includes(t)) toggle(t); setExtra(""); }}>
+            <input className="input sm" style={{ width: 110 }} placeholder="Thêm mã…" value={extra} onChange={(e) => setExtra(e.target.value)} />
+          </form>
         </div>
         <div className="form-grid">
           <Field label="Mục tiêu">

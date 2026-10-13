@@ -1,9 +1,10 @@
 """Nguồn dữ liệu giá cổ phiếu.
 
 Thứ tự ưu tiên:
-1. Dữ liệu người dùng tự nhập (CSV định dạng Amibroker/CafeF: <Ticker>,<DTYYYYMMDD>,<Open>,...).
-2. Dữ liệu thật từ API công khai (VNDirect dchart, dự phòng TCBS) - khi DATA_MODE = auto | live.
-3. Dữ liệu DEMO mô phỏng (có tính tất định theo mã) - khi không lấy được dữ liệu thật.
+1. Dữ liệu người dùng tự nhập (CSV/Excel: Amibroker, CafeF, Vietstock, investing.com…).
+2. Dữ liệu thật - khi DATA_MODE = auto | live: SSI FastConnect / DNSE OpenAPI (chính thức, nếu có khóa) →
+   KBS → Vietcap → VNDirect → CafeF.
+3. Dữ liệu DEMO mô phỏng (có tính tất định theo mã) - chỉ khi DATA_MODE = demo, hoặc auto mà mọi nguồn đều lỗi.
 
 Mọi kết quả đều kèm trường `source` để giao diện hiển thị rõ đang dùng dữ liệu gì.
 """
@@ -12,22 +13,20 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 
-import httpx
 import numpy as np
 import pandas as pd
 
 from ..config import settings
 from ..db import get_db
-from . import universe
+from . import http, universe
 
 log = logging.getLogger(__name__)
 
-HTTP_TIMEOUT = httpx.Timeout(8.0, connect=3.0)
-HEADERS = {"User-Agent": "Mozilla/5.0 (AutoTradingVN)", "Accept": "application/json"}
 
 SOURCE_IMPORTED = "imported"
 SOURCE_DEMO = "demo"
@@ -38,117 +37,235 @@ class DataUnavailable(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Live providers - nhiều nguồn công khai, tự động chuyển nguồn khi lỗi
+# Live providers - nhiều nguồn, tự động chuyển nguồn khi lỗi
 # ---------------------------------------------------------------------------
+VN_TZ = "Asia/Ho_Chi_Minh"
+INDEX_SYMBOLS = {"VNINDEX", "HNXINDEX", "UPCOMINDEX", "VN30", "HNX30", "VN100"}
+
+
+def is_index(ticker: str) -> bool:
+    return ticker.upper() in INDEX_SYMBOLS
+
+
 def _epoch(d: date, end_of_day: bool = False) -> int:
-    t = datetime.max.time() if end_of_day else datetime.min.time()
-    return int(datetime.combine(d, t).timestamp())
+    """Mốc thời gian (giây) của một NGÀY theo giờ Việt Nam (UTC+7)."""
+    ts = pd.Timestamp(datetime.combine(d, datetime.max.time() if end_of_day else datetime.min.time()), tz=VN_TZ)
+    return int(ts.timestamp())
 
 
-def _udf_frame(js: dict, ticker: str) -> pd.DataFrame:
-    """Chuẩn TradingView UDF {t,o,h,l,c,v} (có thể lồng trong 'data')."""
-    if isinstance(js.get("data"), dict) and "t" in js["data"]:
-        js = js["data"]
-    if js.get("s") not in (None, "ok") or not js.get("t"):
+def _dates_from_epoch(values) -> pd.Series:
+    """Epoch giây (UTC) → ngày giao dịch theo giờ Việt Nam. Không đổi múi giờ sẽ làm lệch ngày khi nguồn đánh
+    dấu nến ngày lúc 00:00 giờ VN (= 17:00 UTC hôm trước)."""
+    return (pd.to_datetime(pd.Series([int(float(x)) for x in values]), unit="s", utc=True)
+            .dt.tz_convert(VN_TZ).dt.tz_localize(None).dt.normalize())
+
+
+def _dates_from_text(values) -> pd.Series:
+    """Chuỗi ngày/giờ đa định dạng: ISO (có/không múi giờ), dd/mm/yyyy, dd-mm-yyyy."""
+    out = []
+    for v in values:
+        s = str(v).strip()
+        if re.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{4}", s):
+            ts = pd.to_datetime(s, dayfirst=True)
+        else:
+            ts = pd.to_datetime(s)
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert(VN_TZ).tz_localize(None)
+        out.append(ts.normalize())
+    return pd.Series(out)
+
+
+def _frame(dates: pd.Series, o, h, l, c, v, ticker: str, unit: float) -> pd.DataFrame:  # noqa: E741
+    """Chuẩn hóa về VND. `unit`: hệ số nhân của nguồn (1 = VND, 1000 = nghìn đồng); chỉ số giữ nguyên điểm."""
+    df = pd.DataFrame({"date": dates.values, "open": pd.to_numeric(pd.Series(o), errors="coerce"),
+                       "high": pd.to_numeric(pd.Series(h), errors="coerce"),
+                       "low": pd.to_numeric(pd.Series(l), errors="coerce"),
+                       "close": pd.to_numeric(pd.Series(c), errors="coerce"),
+                       "volume": pd.to_numeric(pd.Series(v), errors="coerce").fillna(0)})
+    if not is_index(ticker) and unit != 1:
+        df[["open", "high", "low", "close"]] *= unit
+    df = df.dropna(subset=["close"]).sort_values("date").drop_duplicates("date", keep="last")
+    if df.empty:
         raise DataUnavailable(f"Không có dữ liệu cho {ticker}")
-    df = pd.DataFrame({
-        "date": pd.to_datetime([int(x) for x in js["t"]], unit="s").normalize(),
-        "open": pd.to_numeric(js["o"]), "high": pd.to_numeric(js["h"]),
-        "low": pd.to_numeric(js["l"]), "close": pd.to_numeric(js["c"]),
-        "volume": pd.to_numeric(js.get("v") or [0] * len(js["t"])),
-    })
-    if ticker != "VNINDEX" and df["close"].median() < 1_000:
-        df[["open", "high", "low", "close"]] *= 1_000  # đơn vị nghìn đồng → đồng
     return df
 
 
-def _get_json(url: str, params: dict, headers: dict | None = None) -> dict:
-    r = httpx.get(url, params=params, headers={**HEADERS, **(headers or {})}, timeout=HTTP_TIMEOUT,
-                  follow_redirects=True)
-    r.raise_for_status()
-    return r.json()
+def _udf(js, ticker: str, unit: float) -> pd.DataFrame:
+    """Chuẩn TradingView UDF {s,t,o,h,l,c,v} (có thể lồng trong 'data')."""
+    if isinstance(js, dict) and isinstance(js.get("data"), dict) and "t" in js["data"]:
+        js = js["data"]
+    if not isinstance(js, dict) or js.get("s") not in (None, "ok") or not js.get("t"):
+        raise DataUnavailable(f"Không có dữ liệu cho {ticker}")
+    n = len(js["t"])
+    return _frame(_dates_from_epoch(js["t"]), js["o"], js["h"], js["l"], js["c"], js.get("v") or [0] * n,
+                  ticker, unit)
 
 
+# ---- KBS (KB Securities) - không cần khóa; giá cổ phiếu tính bằng VND, chỉ số bằng điểm ---------------
+KBS_BASE = "https://kbbuddywts.kbsec.com.vn/iis-server/investment"
+
+
+def _fetch_kbs(ticker: str, start: date, end: date) -> pd.DataFrame:
+    path = f"index/{ticker}" if is_index(ticker) else f"stocks/{ticker}"
+    js = http.get_json(f"{KBS_BASE}/{path}/data_day",
+                       {"sdate": start.strftime("%d-%m-%Y"), "edate": end.strftime("%d-%m-%Y")})
+    rows = (js or {}).get("data_day") if isinstance(js, dict) else None
+    if not rows:
+        raise DataUnavailable(f"KBS không có dữ liệu cho {ticker}")
+    return _frame(_dates_from_text([r["t"] for r in rows]), [r.get("o") for r in rows], [r.get("h") for r in rows],
+                  [r.get("l") for r in rows], [r.get("c") for r in rows], [r.get("v") or 0 for r in rows],
+                  ticker, unit=1)
+
+
+# ---- Vietcap (VCI) - không cần khóa; mỗi yêu cầu MỘT mã; VND / điểm; chặn IP máy chủ đám mây ------------
+VCI_HEADERS = {"Referer": "https://trading.vietcap.com.vn/", "Origin": "https://trading.vietcap.com.vn"}
+_VCI_INDEX = {"VNINDEX": "VNINDEX", "HNXINDEX": "HNXIndex", "UPCOMINDEX": "HNXUpcomIndex", "VN30": "VN30",
+              "HNX30": "HNX30", "VN100": "VN100"}
+
+
+def _fetch_vci(ticker: str, start: date, end: date) -> pd.DataFrame:
+    symbol = _VCI_INDEX.get(ticker, ticker)
+    count = int(np.busday_count(start, end + timedelta(days=1))) + 5
+    js = http.post_json("https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart",
+                        {"timeFrame": "ONE_DAY", "symbols": [symbol], "to": _epoch(end + timedelta(days=1)),
+                         "countBack": count}, headers=VCI_HEADERS)
+    items = js.get("data") if isinstance(js, dict) else js
+    item = next((x for x in (items or []) if isinstance(x, dict) and x.get("t")), None)
+    if not item:
+        raise DataUnavailable(f"Vietcap không có dữ liệu cho {ticker}")
+    df = _udf({**item, "s": "ok"}, ticker, unit=1)
+    return df[df["date"] >= pd.Timestamp(start)]
+
+
+# ---- VNDirect dchart - không cần khóa; giá tính bằng NGHÌN đồng ---------------------------------------
 def _fetch_vndirect(ticker: str, start: date, end: date) -> pd.DataFrame:
-    js = _get_json("https://dchart-api.vndirect.com.vn/dchart/history",
-                   {"resolution": "D", "symbol": ticker, "from": _epoch(start), "to": _epoch(end, True)})
-    return _udf_frame(js, ticker)
+    js = http.get_json("https://dchart-api.vndirect.com.vn/dchart/history",
+                       {"resolution": "D", "symbol": ticker, "from": _epoch(start), "to": _epoch(end, True)})
+    return _udf(js, ticker, unit=1000)
+
+
+# ---- CafeF - không cần khóa; nghìn đồng; có GIÁ ĐIỀU CHỈNH (cổ tức, chia tách) -------------------------
+def _fetch_cafef(ticker: str, start: date, end: date) -> pd.DataFrame:
+    rows: list[dict] = []
+    for page in range(1, 11):  # phân trang - mỗi trang tối đa 1.000 phiên
+        js = http.get_json("https://s.cafef.vn/Ajax/PageNew/DataHistory/PriceHistory.ashx",
+                           {"Symbol": ticker, "StartDate": start.strftime("%Y-%m-%d"),
+                            "EndDate": end.strftime("%Y-%m-%d"), "PageIndex": page, "PageSize": 1000})
+        batch = ((js or {}).get("Data") or {}).get("Data") or []
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
+    if not rows:
+        raise DataUnavailable(f"CafeF không có dữ liệu cho {ticker}")
+
+    def col(k):
+        return pd.to_numeric(pd.Series([r.get(k) for r in rows]), errors="coerce")
+    raw_close = col("GiaDongCua")
+    adj_close = col("GiaDieuChinh").fillna(raw_close)
+    factor = (adj_close / raw_close).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+    df = _frame(_dates_from_text([r["Ngay"] for r in rows]), col("GiaMoCua") * factor, col("GiaCaoNhat") * factor,
+                col("GiaThapNhat") * factor, adj_close, col("KhoiLuongKhopLenh").fillna(0), ticker, unit=1000)
+    df.attrs["adjusted"] = True
+    return df
+
+
+# ---- SSI FastConnect v3 (CHÍNH THỨC, cần khóa) --------------------------------------------------------
+SSI_BASE = "https://api.ssi.com.vn"
+_ssi_token: dict = {"token": None, "exp": 0.0}
+
+
+def _ssi_auth() -> str:
+    if _ssi_token["token"] and _ssi_token["exp"] - 60 > time.time():
+        return _ssi_token["token"]
+    js = http.post_json(f"{SSI_BASE}/api/v3/auth/token",
+                        {"apiKey": settings.ssi_api_key, "apiSecret": settings.ssi_api_secret})
+    data = js.get("data", js) if isinstance(js, dict) else {}
+    token = data.get("accessToken")
+    if not token:
+        raise DataUnavailable("SSI từ chối khóa API (kiểm tra SSI_API_KEY / SSI_API_SECRET)")
+    exp = float(data.get("expiresAt") or 0)
+    _ssi_token.update(token=token, exp=exp / 1000 if exp > 1e12 else exp or time.time() + 3000)
+    return token
 
 
 def _fetch_ssi(ticker: str, start: date, end: date) -> pd.DataFrame:
-    params = {"resolution": "1d", "symbol": ticker, "from": _epoch(start), "to": _epoch(end, True)}
-    headers = {"Origin": "https://iboard.ssi.com.vn", "Referer": "https://iboard.ssi.com.vn/"}
-    try:
-        js = _get_json("https://iboard-api.ssi.com.vn/statistics/charts/history", params, headers)
-    except Exception:  # noqa: BLE001 - endpoint cũ của iBoard
-        js = _get_json("https://iboard.ssi.com.vn/dchart/api/history", {**params, "resolution": "D"}, headers)
-    return _udf_frame(js, ticker)
-
-
-def _fetch_tcbs(ticker: str, start: date, end: date) -> pd.DataFrame:
-    js = _get_json("https://apipubaws.tcbs.com.vn/stock-insight/v1/stock/bars-long-term",
-                   {"ticker": ticker, "type": "index" if ticker == "VNINDEX" else "stock",
-                    "resolution": "D", "to": _epoch(end, True), "countBack": max(30, (end - start).days)})
-    rows = js.get("data") or []
+    if not (settings.ssi_api_key and settings.ssi_api_secret):
+        raise DataUnavailable("Chưa cấu hình khóa SSI FastConnect")
+    headers = {"Authorization": f"Bearer {_ssi_auth()}", "Content-Type": "application/json"}
+    rows: list[dict] = []
+    for page in range(1, 11):
+        js = http.get_json(f"{SSI_BASE}/api/v3/data/ohlc",
+                           {"symbol": ticker, "from": start.strftime("%Y/%m/%d 00:00:00"),
+                            "to": end.strftime("%Y/%m/%d 23:59:59"), "timeFrame": "1d",
+                            "pageIndex": page, "pageSize": 1000}, headers=headers)
+        batch = (js or {}).get("data") or []
+        if isinstance(batch, dict):
+            batch = batch.get("items") or batch.get("data") or []
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
     if not rows:
-        raise DataUnavailable(f"TCBS không có dữ liệu cho {ticker}")
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["tradingDate"]).dt.tz_localize(None).dt.normalize()
-    return df[["date", "open", "high", "low", "close", "volume"]]
+        raise DataUnavailable(f"SSI không có dữ liệu cho {ticker}")
+
+    def pick(r, *keys):
+        return next((r[k] for k in keys if r.get(k) is not None), None)
+    closes = pd.to_numeric(pd.Series([pick(r, "close", "Close") for r in rows]), errors="coerce")
+    unit = 1000 if (not is_index(ticker) and closes.median() < 500) else 1  # tài liệu không ghi đơn vị
+    return _frame(_dates_from_text([pick(r, "tradingDate", "TradingDate") for r in rows]),
+                  [pick(r, "open", "Open") for r in rows], [pick(r, "high", "High") for r in rows],
+                  [pick(r, "low", "Low") for r in rows], closes, [pick(r, "volume", "Volume") or 0 for r in rows],
+                  ticker, unit)
 
 
-def _fetch_vps(ticker: str, start: date, end: date) -> pd.DataFrame:
-    js = _get_json("https://histdatafeed.vps.com.vn/tradingview/history",
-                   {"symbol": ticker, "resolution": "D", "from": _epoch(start), "to": _epoch(end, True)})
-    return _udf_frame(js, ticker)
+# ---- DNSE OpenAPI (CHÍNH THỨC, cần khóa; yêu cầu ký HMAC; giá nghìn đồng) -----------------------------
+DNSE_BASE = "https://openapi.dnse.com.vn"
 
 
-def _fetch_vietstock(ticker: str, start: date, end: date) -> pd.DataFrame:
-    headers = {"Origin": "https://stockchart.vietstock.vn", "Referer": "https://stockchart.vietstock.vn/"}
-    js = _get_json("https://api.vietstock.vn/tvnew/history",
-                   {"symbol": ticker, "resolution": "D", "from": _epoch(start), "to": _epoch(end, True)}, headers)
-    return _udf_frame(js, ticker)
+def _dnse_headers(path: str) -> dict:
+    import base64
+    import hmac
+    import uuid as _uuid
+    from email.utils import formatdate
+    from urllib.parse import quote
+    date_hdr = formatdate(usegmt=True)
+    nonce = _uuid.uuid4().hex
+    to_sign = f"(request-target): get {path}\ndate: {date_hdr}\nnonce: {nonce}"
+    sig = base64.b64encode(hmac.new(settings.dnse_api_secret.encode(), to_sign.encode(), "sha256").digest()).decode()
+    return {"Date": date_hdr, "x-api-key": settings.dnse_api_key, "version": "2026-07-23",
+            "X-Signature": (f'Signature keyId="{settings.dnse_api_key}",algorithm="hmac-sha256",'
+                            f'headers="(request-target) date",signature="{quote(sig, safe="")}",nonce="{nonce}"')}
 
 
-def _fetch_cafef(ticker: str, start: date, end: date) -> pd.DataFrame:
-    js = _get_json("https://s.cafef.vn/Ajax/PageNew/DataHistory/PriceHistory.ashx",
-                   {"Symbol": ticker, "StartDate": start.strftime("%m/%d/%Y"),
-                    "EndDate": end.strftime("%m/%d/%Y"), "PageIndex": 1, "PageSize": 2000})
-    rows = ((js.get("Data") or {}).get("Data")) or []
-    if not rows:
-        raise DataUnavailable(f"CafeF không có dữ liệu cho {ticker}")
-    raw_close = pd.to_numeric(pd.Series([r.get("GiaDongCua") for r in rows]), errors="coerce")
-    adj_close = pd.to_numeric(pd.Series([r.get("GiaDieuChinh") for r in rows]), errors="coerce").fillna(raw_close)
-    factor = (adj_close / raw_close).replace([np.inf, -np.inf], np.nan).fillna(1.0)  # hệ số điều chỉnh (cổ tức, chia tách)
-    df = pd.DataFrame({
-        "date": pd.to_datetime([r["Ngay"] for r in rows], dayfirst=True),
-        "open": pd.to_numeric(pd.Series([r.get("GiaMoCua") for r in rows]), errors="coerce") * factor,
-        "high": pd.to_numeric(pd.Series([r.get("GiaCaoNhat") for r in rows]), errors="coerce") * factor,
-        "low": pd.to_numeric(pd.Series([r.get("GiaThapNhat") for r in rows]), errors="coerce") * factor,
-        "close": adj_close,
-        "volume": [r.get("KhoiLuongKhopLenh") or 0 for r in rows],
-    }).sort_values("date")  # CafeF trả về mới nhất trước
-    if ticker != "VNINDEX" and df["close"].median() < 1_000:
-        df[["open", "high", "low", "close"]] *= 1_000
-    return df
+def _fetch_dnse(ticker: str, start: date, end: date) -> pd.DataFrame:
+    if not (settings.dnse_api_key and settings.dnse_api_secret):
+        raise DataUnavailable("Chưa cấu hình khóa DNSE OpenAPI")
+    js = http.get_json(f"{DNSE_BASE}/price/ohlc",
+                       {"type": "INDEX" if is_index(ticker) else "STOCK", "symbol": ticker, "resolution": "1D",
+                        "from": _epoch(start), "to": _epoch(end, True)}, headers=_dnse_headers("/price/ohlc"))
+    return _udf(js, ticker, unit=1000)
 
 
-# Thứ tự mặc định; nguồn chạy thành công gần nhất sẽ được ưu tiên ở lần sau.
+# Thứ tự mặc định: nguồn CHÍNH THỨC (nếu đã cấu hình khóa) → nguồn công khai đang hoạt động 2026.
+# (TCBS, Vietstock, VPS, SSI iBoard đã bị loại: API công khai ngừng hoạt động hoặc yêu cầu phiên đăng nhập.)
 LIVE_PROVIDERS = {
+    "ssi": ("SSI FastConnect (chính thức)", _fetch_ssi),
+    "dnse": ("DNSE OpenAPI (chính thức)", _fetch_dnse),
+    "kbs": ("KB Securities (KBS)", _fetch_kbs),
+    "vci": ("Vietcap (VCI)", _fetch_vci),
     "vndirect": ("VNDirect (dchart)", _fetch_vndirect),
-    "ssi": ("SSI iBoard", _fetch_ssi),
-    "tcbs": ("TCBS", _fetch_tcbs),
-    "vps": ("VPS", _fetch_vps),
-    "vietstock": ("Vietstock", _fetch_vietstock),
     "cafef": ("CafeF", _fetch_cafef),
 }
-PROVIDER_COOLDOWN = 300  # giây: tạm bỏ qua nguồn vừa lỗi kết nối để không làm chậm ứng dụng
-_down_until: dict[str, float] = {}
+KEYED_PROVIDERS = {"ssi": ("ssi_api_key", "ssi_api_secret"), "dnse": ("dnse_api_key", "dnse_api_secret")}
+
+
+def _configured(key: str) -> bool:
+    need = KEYED_PROVIDERS.get(key)
+    return not need or all(getattr(settings, k) for k in need)
 
 
 def _provider_order() -> list[str]:
     preferred = get_db().get_kv("preferred_provider")
-    order = list(LIVE_PROVIDERS)
+    order = [k for k in LIVE_PROVIDERS if _configured(k)]
     if preferred in order:
         order.remove(preferred)
         order.insert(0, preferred)
@@ -156,13 +273,11 @@ def _provider_order() -> list[str]:
 
 
 def fetch_live(ticker: str, start: date, end: date) -> tuple[pd.DataFrame, str, list[dict]]:
-    """Thử lần lượt các nguồn; trả về (dữ liệu, tên nguồn, nhật ký các lần thử)."""
+    """Thử lần lượt các nguồn; trả về (dữ liệu, tên nguồn, nhật ký các lần thử).
+    Cả chuỗi lấy từ MỘT nguồn (không ghép nguồn: quy ước điều chỉnh giá có thể khác nhau)."""
     attempts = []
     for key in _provider_order():
         name, fn = LIVE_PROVIDERS[key]
-        if _down_until.get(key, 0) > time.time():
-            attempts.append({"provider": key, "ok": False, "error": "tạm bỏ qua (vừa lỗi kết nối)"})
-            continue
         t0 = time.time()
         try:
             df = fn(ticker, start, end)
@@ -173,8 +288,6 @@ def fetch_live(ticker: str, start: date, end: date) -> tuple[pd.DataFrame, str, 
             get_db().set_kv("live_status", {"ok": True, "provider": key, "at": time.time()})
             return df, key, attempts
         except Exception as exc:  # noqa: BLE001 - lỗi mạng/định dạng → thử nguồn tiếp theo
-            if isinstance(exc, (httpx.TransportError, httpx.HTTPStatusError)):
-                _down_until[key] = time.time() + PROVIDER_COOLDOWN
             attempts.append({"provider": key, "ok": False, "error": str(exc)[:160],
                              "ms": int((time.time() - t0) * 1000)})
             log.info("Nguồn %s lỗi cho %s: %s", name, ticker, exc)
@@ -183,25 +296,33 @@ def fetch_live(ticker: str, start: date, end: date) -> tuple[pd.DataFrame, str, 
 
 
 def provider_health(ticker: str = "FPT") -> list[dict]:
-    """Kiểm tra từng nguồn dữ liệu (dùng cho trang Trạng thái dữ liệu)."""
+    """Kiểm tra từng nguồn (trang Dữ liệu): giá đóng cửa gần nhất của các nguồn để tự đối chiếu."""
+    http.reset_all()
     end = date.today()
     start = end - timedelta(days=90)
     out = []
     for key, (name, fn) in LIVE_PROVIDERS.items():
         t0 = time.time()
+        if not _configured(key):
+            out.append({"provider": key, "name": name, "ok": False, "skipped": True,
+                        "error": "Chưa cấu hình khóa API (tùy chọn) - xem hướng dẫn trong file .env"})
+            continue
         try:
             df = fn(ticker, start, end)
             out.append({"provider": key, "name": name, "ok": True, "rows": len(df),
                         "last_date": pd.Timestamp(df["date"].max()).strftime("%Y-%m-%d"),
                         "last_close": float(df.sort_values("date")["close"].iloc[-1]),
-                        "ms": int((time.time() - t0) * 1000)})
+                        "adjusted": bool(df.attrs.get("adjusted")), "ms": int((time.time() - t0) * 1000)})
         except Exception as exc:  # noqa: BLE001
             out.append({"provider": key, "name": name, "ok": False, "error": str(exc)[:200],
                         "ms": int((time.time() - t0) * 1000)})
-    for r in out:
-        if r["ok"]:
-            _down_until.pop(r["provider"], None)
-    get_db().set_kv("provider_health", {"checked_at": time.time(), "results": out})
+    closes = [r["last_close"] for r in out if r.get("ok")]
+    if len(closes) >= 2:
+        med = float(np.median(closes))
+        for r in out:
+            if r.get("ok"):
+                r["diff_vs_median"] = r["last_close"] / med - 1  # lệch >1% → nghi ngờ đơn vị / điều chỉnh giá
+    get_db().set_kv("provider_health", {"checked_at": time.time(), "results": out, "ticker": ticker})
     return out
 
 
@@ -376,8 +497,8 @@ def data_status() -> dict:
         "providers": [{"key": k, "name": v[0]} for k, v in LIVE_PROVIDERS.items()],
         "provider_health": get_db().get_kv("provider_health"),
         "needs_manual_input": needs_manual,
-        "message": ("Không truy cập được các nguồn tự động (VNDirect, SSI, TCBS, VPS, Vietstock, CafeF). "
-                    "Ứng dụng đang dùng dữ liệu DEMO - hãy tải file Excel/CSV giá & BCTC để phân tích sát thực tế."
+        "message": ("Không truy cập được các nguồn tự động (KBS, Vietcap, VNDirect, CafeF…). "
+                    "Ứng dụng đang dùng dữ liệu DEMO - hãy kiểm tra kết nối Internet hoặc tải file Excel/CSV giá & BCTC."
                     if needs_manual else
                     "Đang dùng dữ liệu mô phỏng (DATA_MODE=demo)." if source == SOURCE_DEMO else
                     f"Dữ liệu tự động từ nguồn {source}."),

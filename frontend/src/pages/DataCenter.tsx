@@ -29,33 +29,36 @@ function Sources() {
       setBusy(false);
     }
   };
-  const providers = [
-    { key: "vndirect", name: "VNDirect (dchart)" }, { key: "ssi", name: "SSI iBoard" }, { key: "tcbs", name: "TCBS" },
-    { key: "vps", name: "VPS" }, { key: "vietstock", name: "Vietstock" }, { key: "cafef", name: "CafeF" },
-  ];
+  const providers: { key: string; name: string }[] = status?.data.providers ?? [];
+  const ticker = status?.data.provider_health?.ticker ?? "FPT";
   return (
     <div className="col" style={{ gap: 16 }}>
       <Alert kind={status?.data.needs_manual_input ? "warn" : status?.data.source === "demo" ? "info" : "ok"} title={`Chế độ dữ liệu: ${status?.data.mode?.toUpperCase()} · Nguồn đang dùng: ${sourceLabel(status?.data.source)}`}>
         {status?.data.message}
       </Alert>
       <Card title="Chuỗi nguồn dữ liệu tự động" icon={<Database size={16} />}
-        hint="Ứng dụng tự động thử lần lượt các nguồn; nguồn nào lỗi sẽ chuyển sang nguồn kế tiếp. Chỉ khi tất cả đều lỗi mới cần nhập thủ công."
+        hint={`Ứng dụng thử lần lượt từng nguồn; nguồn lỗi sẽ chuyển sang nguồn kế tiếp. "Kiểm tra kết nối" lấy giá ${ticker} từ MỌI nguồn để bạn đối chiếu.`}
         actions={<button className="btn primary sm" onClick={check} disabled={busy}><RefreshCw size={14} className={busy ? "spin" : ""} /> {busy ? "Đang kiểm tra…" : "Kiểm tra kết nối"}</button>}>
         <div className="grid g3">
           {providers.map((p, i) => {
             const r = res?.find((x) => x.provider === p.key);
+            const off = r?.ok && Math.abs(r.diff_vs_median ?? 0) > 0.01;
+            const color = !r || r.skipped ? undefined : r.ok ? (off ? "var(--warn)" : "var(--up)") : "var(--down)";
             return (
-              <div key={p.key} className="card tight flat row" style={{ gap: 12 }}>
-                <span className="kpi-icon" style={{ background: r ? (r.ok ? "var(--up-soft)" : "var(--down-soft)") : undefined, color: r ? (r.ok ? "var(--up)" : "var(--down)") : undefined }}>
-                  {r ? (r.ok ? <Wifi size={17} /> : <WifiOff size={17} />) : <span className="mono small">{i + 1}</span>}
+              <div key={p.key} className="card tight flat row" style={{ gap: 12, alignItems: "flex-start" }}>
+                <span className="kpi-icon" style={{ color }}>
+                  {r && !r.skipped ? (r.ok ? <Wifi size={17} /> : <WifiOff size={17} />) : <span className="mono small">{i + 1}</span>}
                 </span>
                 <div className="grow" style={{ minWidth: 0 }}>
                   <div className="bold">{p.name}</div>
-                  <div className="tiny subtle" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {!r ? "Chưa kiểm tra" : r.ok ? `OK · ${r.rows} phiên · đến ${r.last_date} · ${r.ms}ms` : `Lỗi: ${r.error}`}
+                  <div className="tiny subtle">
+                    {!r ? "Chưa kiểm tra" : r.skipped ? "Chưa cấu hình khóa API (tùy chọn)" : r.ok
+                      ? <>Giá {ticker} {r.last_date}: <b className="mono">{vnd(r.last_close)}</b> · {r.rows} phiên · {r.ms}ms{r.adjusted ? " · giá điều chỉnh" : ""}</>
+                      : `Lỗi: ${r.error}`}
                   </div>
+                  {off && <div className="tiny" style={{ color: "var(--warn)" }}>Lệch {pct(r.diff_vs_median, 1, true)} so với các nguồn khác - kiểm tra đơn vị / điều chỉnh giá.</div>}
                 </div>
-                {r && (r.ok ? <CheckCircle2 size={18} color="var(--up)" /> : <XCircle size={18} color="var(--down)" />)}
+                {r && !r.skipped && (r.ok ? <CheckCircle2 size={18} color={off ? "var(--warn)" : "var(--up)"} /> : <XCircle size={18} color="var(--down)" />)}
               </div>
             );
           })}
@@ -64,8 +67,11 @@ function Sources() {
       <Card title="Thứ tự ưu tiên dữ liệu" icon={<Database size={16} />}>
         <ol className="small muted" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.9 }}>
           <li><b>Dữ liệu bạn tự nhập</b> (file giá CSV/Excel, BCTC Excel/ảnh/PDF) - luôn được ưu tiên cao nhất.</li>
-          <li><b>Nguồn tự động</b>: VNDirect → SSI iBoard → TCBS → VPS → Vietstock → CafeF (nguồn thành công gần nhất được ưu tiên ở lần sau).</li>
-          <li><b>Dữ liệu DEMO</b> mô phỏng - chỉ dùng khi không có hai nguồn trên, luôn được gắn nhãn cảnh báo.</li>
+          <li><b>Nguồn chính thức</b> (nếu bạn có tài khoản & khóa API): SSI FastConnect, DNSE OpenAPI - điền khóa vào file <code>.env</code>
+            (<code>SSI_API_KEY</code>/<code>SSI_API_SECRET</code>, <code>DNSE_API_KEY</code>/<code>DNSE_API_SECRET</code>) rồi chạy lại ứng dụng.</li>
+          <li><b>Nguồn công khai</b>: KB Securities → Vietcap → VNDirect → CafeF (không cần đăng ký; là API không chính thức nên có thể thay đổi).
+            BCTC năm tự động lấy từ KBS → Vietcap.</li>
+          <li><b>Không có dữ liệu thật</b>: giá dùng DEMO (gắn nhãn cảnh báo, không cho đặt lệnh); BCTC để trống - <b>không bao giờ bịa số liệu</b>.</li>
         </ol>
       </Card>
     </div>
@@ -169,6 +175,8 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
   const { universe, status } = useStatus();
   const fields = useAsync(() => api.get("/api/financials/fields"), []);
   const fin = useAsync(() => api.get(`/api/financials/${ticker}`), [ticker]);
+  const [tickerInput, setTickerInput] = useState(ticker);
+  useEffect(() => setTickerInput(ticker), [ticker]);
   const [draft, setDraft] = useState<Row[] | null>(null);
   const [meta, setMeta] = useState<any>(null);
   const [busy, setBusy] = useState("");
@@ -253,9 +261,18 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
       <Card>
         <div className="row wrap" style={{ gap: 12, alignItems: "flex-end" }}>
           <Field label="Mã cổ phiếu">
-            <select className="input" style={{ width: 260 }} value={ticker} onChange={(e) => setTicker(e.target.value)}>
-              {universe.map((u) => <option key={u.ticker} value={u.ticker}>{u.ticker} - {u.name}</option>)}
-            </select>
+            <input className="input mono" style={{ width: 200 }} list="all-tickers" value={tickerInput}
+              onChange={(e) => {
+                const v = e.target.value.toUpperCase().trim();
+                setTickerInput(v);
+                if (v.length >= 3 && universe.some((u) => u.ticker === v)) setTicker(v);  // chỉ tải khi đã chọn đúng mã
+              }}
+              onBlur={() => tickerInput.length >= 3 && setTicker(tickerInput)}
+              onKeyDown={(e) => { if (e.key === "Enter" && tickerInput.length >= 3) setTicker(tickerInput); }}
+              placeholder="VD: FPT" />
+            <datalist id="all-tickers">
+              {universe.map((u) => <option key={u.ticker} value={u.ticker}>{u.name}</option>)}
+            </datalist>
           </Field>
           {fin.data && <div className="row" style={{ gap: 6 }}><span className="small muted">Nguồn BCTC hiện tại:</span><SourceBadge source={fin.data.source} /></div>}
           <div className="grow" />

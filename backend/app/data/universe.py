@@ -59,7 +59,10 @@ UNIVERSE: dict[str, tuple[str, str, str, float]] = {
     "BVH": ("Tập đoàn Bảo Việt", "Bảo hiểm", "HOSE", 50_000),
 }
 
-INDEXES = {"VNINDEX": ("Chỉ số VN-Index", "Chỉ số", "HOSE", 1_300.0)}
+INDEXES = {"VNINDEX": ("Chỉ số VN-Index", "Chỉ số", "HOSE", 1_300.0),
+           "VN30": ("Chỉ số VN30", "Chỉ số", "HOSE", 1_400.0),
+           "HNXINDEX": ("Chỉ số HNX-Index", "Chỉ số", "HNX", 240.0),
+           "UPCOMINDEX": ("Chỉ số UPCoM-Index", "Chỉ số", "UPCOM", 100.0)}
 
 VN30 = ["ACB", "BCM", "BID", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG", "MBB", "MSN", "MWG",
         "PLX", "POW", "SAB", "SHB", "SSI", "STB", "TCB", "TPB", "VCB", "VHM", "VIB", "VIC",
@@ -67,15 +70,33 @@ VN30 = ["ACB", "BCM", "BID", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG", "MBB", "M
 
 
 def info(ticker: str) -> dict:
+    """Thông tin mã: danh mục theo dõi mặc định → danh sách niêm yết đầy đủ (KBS/Vietcap) → mặc định."""
     ticker = ticker.upper()
     if ticker in UNIVERSE:
         name, sector, exchange, ref = UNIVERSE[ticker]
     elif ticker in INDEXES:
         name, sector, exchange, ref = INDEXES[ticker]
     else:
-        name, sector, exchange, ref = (ticker, "Khác", "HOSE", 25_000)
+        from .listing import lookup  # tránh import vòng
+        hit = lookup(ticker)
+        if hit:
+            name, sector, exchange, ref = hit.get("name") or ticker, hit.get("sector") or "Khác", hit["exchange"], 25_000
+        else:
+            name, sector, exchange, ref = (ticker, "Khác", "HOSE", 25_000)
     return {"ticker": ticker, "name": name, "sector": sector, "exchange": exchange,
             "reference_price": ref, "in_vn30": ticker in VN30}
+
+
+def is_listed(ticker: str) -> bool:
+    """Mã hợp lệ để phân tích / đặt lệnh: trong danh mục mặc định, danh sách niêm yết, hoặc đã nhập file giá."""
+    ticker = ticker.upper().strip()
+    if ticker in UNIVERSE or ticker in INDEXES:
+        return True
+    from .listing import lookup
+    if lookup(ticker):
+        return True
+    from .providers import _imported_history
+    return _imported_history(ticker) is not None
 
 
 def list_universe() -> list[dict]:

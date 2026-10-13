@@ -21,7 +21,7 @@ from .agent import knowledge, llm, vision
 from .analysis import technical
 from .config import settings
 from .context import as_user, reset_current_user, set_current_user
-from .data import excel_import, fundamentals, providers, universe
+from .data import excel_import, fundamentals, listing, providers, universe
 from .db import get_db
 from .finance import calculators, planner
 from .trading import backtest, engine
@@ -360,7 +360,21 @@ def data_refresh():
 
 @app.get("/api/universe")
 def get_universe():
-    return {"stocks": universe.list_universe(), "sectors": universe.sectors(), "vn30": universe.VN30}
+    """Danh mục theo dõi mặc định + danh sách đầy đủ mọi mã niêm yết (dùng cho ô tìm kiếm)."""
+    full = listing.stocks()
+    return {"stocks": universe.list_universe(), "sectors": universe.sectors(), "vn30": universe.VN30,
+            "all": [{"ticker": t, "name": v.get("name") or t, "exchange": v.get("exchange"), "sector": v.get("sector") or ""}
+                    for t, v in sorted(full.items())],
+            "listing_source": listing.source() if full else None}
+
+
+@app.post("/api/data/listing/refresh")
+def listing_refresh():
+    try:
+        n = len(listing.refresh())
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"count": n, "source": listing.source()}
 
 
 @app.get("/api/events")

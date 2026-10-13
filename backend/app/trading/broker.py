@@ -218,8 +218,8 @@ class PaperBroker(BrokerBase):
         ticker, side = normalize_ticker(ticker), side.upper().strip()
         if not ticker:
             raise OrderError("Thiếu mã cổ phiếu")
-        if ticker not in universe.UNIVERSE and providers._imported_history(ticker) is None:  # noqa: SLF001
-            raise OrderError(f"Mã {ticker} không có trong danh sách theo dõi và chưa có dữ liệu giá nhập - "
+        if not universe.is_listed(ticker) or providers.is_index(ticker):
+            raise OrderError(f"Mã {ticker} không có trong danh sách cổ phiếu niêm yết và chưa có dữ liệu giá nhập - "
                              "kiểm tra lại mã (có thể gõ nhầm).")
         q = quote(ticker)
         last_close, reference, ex = q["last"], q["reference"], q["exchange"]

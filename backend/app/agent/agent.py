@@ -238,7 +238,7 @@ def _vnd(x) -> str:
 def offline_chat(message: str, session_id: str) -> dict:
     """Trả lời dựa trên luật khi chưa có API key (vẫn dùng toàn bộ mô hình phân tích của hệ thống)."""
     msg = message.upper()
-    tickers = [t for t in re.findall(r"\b[A-Z]{3}\b", msg) if t in universe.UNIVERSE]
+    tickers = [t for t in re.findall(r"\b[A-Z]{3}\b", msg) if universe.is_listed(t)]
     low = message.lower()
     used = []
     if tickers:

@@ -66,12 +66,14 @@ export const SOURCE_LABEL: Record<string, string> = {
   demo: "DEMO",
   imported: "File nhập",
   vndirect: "VNDirect",
-  ssi: "SSI iBoard",
-  tcbs: "TCBS",
-  vps: "VPS",
-  vietstock: "Vietstock",
+  ssi: "SSI FastConnect",
+  dnse: "DNSE",
+  kbs: "KBS",
+  vci: "Vietcap",
   cafef: "CafeF",
+  tcbs: "TCBS",
   manual: "Nhập tay",
+  none: "Chưa có",
 };
 export function sourceLabel(s?: string): string {
   if (!s) return "—";

@@ -256,3 +256,44 @@ def test_backtest_rejects_unknown_tickers_and_reports_sources():
         backtest.run_backtest(tickers=["FPT", "HPGG"], days=400)
     r = backtest.run_backtest(tickers=["FPT", "HPG"], days=400)
     assert r["skipped_demo"] == [] and set(r["sources"]) == {"FPT", "HPG", "VNINDEX"}
+
+
+# ------------------------------------------------------------------ chạy trên máy chủ Internet
+def _hosted(monkeypatch, **kw):
+    import dataclasses
+
+    from app.config import settings
+    hosted = dataclasses.replace(settings, **kw)
+    for mod in (auth, main):
+        monkeypatch.setattr(mod, "settings", hosted)
+
+
+def test_client_ip_behind_hosting_proxy(monkeypatch):
+    _hosted(monkeypatch, proxy_hops=1)
+    # trình duyệt tự gửi "1.1.1.1", proxy của nhà cung cấp nối IP thật vào cuối
+    req = _request("10.0.0.5", {"X-Forwarded-For": "1.1.1.1, 113.161.1.2"})
+    assert auth.client_ip(req) == "113.161.1.2"
+    assert auth.client_ip(_request("10.0.0.5", {})) == "10.0.0.5"
+
+
+def test_remote_first_admin_needs_setup_code(monkeypatch, tmp_path):
+    from app.db import Database
+    import app.db as dbmod
+    fresh = Database(tmp_path / "hosted.sqlite3")
+    monkeypatch.setattr(dbmod, "_db", fresh)
+    auth._failures.clear()
+    remote = {"Host": "autotrading.onrender.com", "X-Forwarded-For": "113.161.1.2"}
+    body = {"username": "chu.tk", "password": "matkhau-789", "display_name": "Chủ tài khoản"}
+    with TestClient(main.app) as c:
+        _hosted(monkeypatch, setup_code="")
+        assert c.post("/api/auth/setup", json=body, headers=remote).status_code == 403  # chưa đặt SETUP_CODE
+        _hosted(monkeypatch, setup_code="ma-bi-mat-2026", proxy_hops=1)
+        st = c.get("/api/auth/status", headers=remote).json()
+        assert st["setup_required"] and st["setup_code_enabled"] and not st["local"]
+        assert c.post("/api/auth/setup", json={**body, "setup_code": "sai"}, headers=remote).status_code == 403
+        r = c.post("/api/auth/setup", json={**body, "setup_code": "ma-bi-mat-2026"}, headers=remote)
+        assert r.status_code == 200 and r.json()["user"]["role"] == "admin"
+        # đã có quản trị viên: mã thiết lập không dùng lại được
+        again = c.post("/api/auth/setup", json={**body, "username": "ke.gian", "setup_code": "ma-bi-mat-2026"}, headers=remote)
+        assert again.status_code == 400
+    auth._failures.clear()

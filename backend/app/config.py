@@ -54,6 +54,15 @@ class Settings:
     dnse_api_secret: str = os.getenv("DNSE_API_SECRET", "").strip()
     port: int = int(os.getenv("PORT", "8000"))
     host: str = os.getenv("HOST", "127.0.0.1")
+    # ---- chạy trên máy chủ Internet (Render, VPS…) ----
+    # Mã thiết lập: cho phép tạo tài khoản quản trị đầu tiên từ xa (chỉ một lần, khi chưa có tài khoản nào)
+    setup_code: str = os.getenv("SETUP_CODE", "").strip()
+    # Số proxy tin cậy đứng trước ứng dụng (Render = 1): lấy IP người dùng từ X-Forwarded-For theo số bước này
+    proxy_hops: int = int(os.getenv("PROXY_HOPS", "0") or 0)
+    # Địa chỉ công khai của ứng dụng (Render tự đặt RENDER_EXTERNAL_URL)
+    public_url: str = (os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
+    # Đường hầm cloudflared (tự tải file .exe) - mặc định TẮT: phần mềm diệt virus hay chặn hành vi này
+    enable_tunnel: bool = _bool("ENABLE_TUNNEL", False)
     frontend_dist: Path = ROOT_DIR / "frontend" / "dist"
 
     @property

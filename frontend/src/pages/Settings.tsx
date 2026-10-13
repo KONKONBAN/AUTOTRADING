@@ -8,7 +8,7 @@ import { api } from "../lib/api";
 import { useTheme } from "../lib/theme";
 
 type Tunnel = { running: boolean; starting: boolean; url: string | null; error: string | null; installed: boolean; log: string[] };
-type Info = { lan_urls: string[]; lan_enabled: boolean; tunnel: Tunnel; local: boolean };
+type Info = { lan_urls: string[]; lan_enabled: boolean; tunnel: Tunnel; tunnel_enabled?: boolean; public_url?: string | null; local: boolean };
 type Session = { id: string; created_at: number; last_seen_at: number; user_agent: string; ip: string; current: boolean };
 type UserRow = { id: number; username: string; display_name: string; role: "admin" | "user"; disabled: boolean; created_at: number; last_login_at: number | null };
 
@@ -208,12 +208,34 @@ function Phone() {
   if (!info) return <Loading />;
   const t = info.tunnel;
   const admin = user.role === "admin";
+  const install = (
+    <Card title="Cài như ứng dụng trên điện thoại" icon={<Smartphone size={16} />}>
+      <ul className="small" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
+        <li><b>Android (Chrome)</b>: mở địa chỉ → menu ⋮ → <b>Thêm vào màn hình chính / Cài đặt ứng dụng</b>.</li>
+        <li><b>iPhone (Safari)</b>: mở địa chỉ → nút Chia sẻ → <b>Thêm vào MH chính</b>.</li>
+        <li><b>Laptop (Chrome / Edge)</b>: mở địa chỉ → biểu tượng <b>Cài đặt ứng dụng</b> ở thanh địa chỉ để có cửa sổ riêng như phần mềm.</li>
+      </ul>
+    </Card>
+  );
+  if (info.public_url)
+    return (
+      <div className="col" style={{ gap: 16 }}>
+        <Card title="Địa chỉ web của ứng dụng" icon={<Globe size={16} />} actions={<Badge tone="up">Đang chạy trên Internet</Badge>}>
+          <div className="col" style={{ gap: 12 }}>
+            <div className="small muted">Mở địa chỉ này trên laptop, máy tính hay điện thoại (4G hoặc Wi-Fi) rồi <b>đăng nhập bằng tài khoản</b>. Có thể quét mã QR bằng camera điện thoại.</div>
+            <UrlBox url={info.public_url} />
+          </div>
+        </Card>
+        {install}
+      </div>
+    );
   return (
     <div className="col" style={{ gap: 16 }}>
       <Alert kind="info" title="Cách hoạt động">
-        Máy tính chạy ứng dụng (phải đang bật); điện thoại truy cập qua Internet hoặc cùng Wi-Fi rồi <b>đăng nhập bằng tài khoản</b> như trên máy tính.
+        Máy tính chạy ứng dụng (phải đang bật); điện thoại truy cập cùng Wi-Fi rồi <b>đăng nhập bằng tài khoản</b> như trên máy tính.
+        Muốn dùng ở bất cứ đâu mà không cần bật máy tính: đưa ứng dụng lên Internet theo hướng dẫn trong README (mục "Web trên Internet").
       </Alert>
-      <Card title="Qua Internet - 4G, ở bất cứ đâu" icon={<Globe size={16} />} actions={t.running ? <Badge tone="up">Đang mở</Badge> : <Badge>Đang tắt</Badge>}>
+      {info.tunnel_enabled && <Card title="Qua Internet - 4G, ở bất cứ đâu" icon={<Globe size={16} />} actions={t.running ? <Badge tone="up">Đang mở</Badge> : <Badge>Đang tắt</Badge>}>
         <div className="col" style={{ gap: 12 }}>
           <div className="small muted">
             Dùng đường hầm miễn phí của Cloudflare (không cần tài khoản), tạo địa chỉ <b>https</b> trỏ về máy tính này. Lần đầu ứng dụng tự tải
@@ -235,7 +257,7 @@ function Phone() {
               <pre className="tiny mono" style={{ whiteSpace: "pre-wrap", maxHeight: 180, overflow: "auto" }}>{t.log.join("\n")}</pre></details>
           )}
         </div>
-      </Card>
+      </Card>}
       <Card title="Cùng mạng Wi-Fi ở nhà" icon={<Wifi size={16} />} actions={info.lan_enabled ? <Badge tone="up">Đang bật</Badge> : <Badge>Đang tắt</Badge>}>
         <div className="col" style={{ gap: 12 }}>
           {!info.lan_enabled && (
@@ -246,14 +268,7 @@ function Phone() {
             : <div className="small subtle">Không tìm thấy địa chỉ mạng nội bộ.</div>)}
         </div>
       </Card>
-      <Card title="Cài như ứng dụng trên điện thoại" icon={<Smartphone size={16} />}>
-        <ul className="small" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>
-          <li><b>Android (Chrome)</b>: mở địa chỉ → menu ⋮ → <b>Thêm vào màn hình chính / Cài đặt ứng dụng</b>.</li>
-          <li><b>iPhone (Safari)</b>: mở địa chỉ → nút Chia sẻ → <b>Thêm vào MH chính</b>.</li>
-          <li>Muốn địa chỉ cố định: dùng Tailscale (miễn phí, cài trên cả máy tính và điện thoại) rồi mở <code>http://&lt;tên-máy-tính&gt;:8000</code>
-            (kèm <code>HOST=0.0.0.0</code>).</li>
-        </ul>
-      </Card>
+      {install}
     </div>
   );
 }

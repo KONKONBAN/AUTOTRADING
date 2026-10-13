@@ -4,7 +4,9 @@ import { api } from "../lib/api";
 import { Alert, Loading } from "./ui";
 
 export type User = { id: number; username: string; display_name: string; role: "admin" | "user" };
-type AuthStatus = { setup_required: boolean; registration_open: boolean; local: boolean; user: User | null };
+type AuthStatus = {
+  setup_required: boolean; registration_open: boolean; local: boolean; setup_code_enabled?: boolean; hosted?: boolean; user: User | null;
+};
 
 const Ctx = createContext<{ user: User; refresh: () => void; logout: () => Promise<void> } | null>(null);
 export const useAuth = () => {
@@ -33,13 +35,13 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   if (failed)
     return (
       <AuthShell>
-        <Alert kind="err" title="Không kết nối được máy chủ">{failed} - kiểm tra máy tính chạy ứng dụng còn bật không.</Alert>
+        <Alert kind="err" title="Không kết nối được máy chủ">{failed} - kiểm tra kết nối Internet, hoặc máy tính chạy ứng dụng còn bật không.</Alert>
         <button className="btn primary block" onClick={check}>Thử lại</button>
       </AuthShell>
     );
   if (!st) return <Loading text="Đang kết nối…" height={320} />;
   if (st.user) return <Ctx.Provider value={{ user: st.user, refresh: check, logout }}>{children}</Ctx.Provider>;
-  if (st.setup_required) return <Setup local={st.local} onDone={check} />;
+  if (st.setup_required) return <Setup local={st.local} codeEnabled={!!st.setup_code_enabled} onDone={check} />;
   return <Login registrationOpen={st.registration_open} onDone={check} />;
 }
 
@@ -149,18 +151,20 @@ function useAccountForm() {
   return { v, set, check };
 }
 
-function Setup({ local, onDone }: { local: boolean; onDone: () => void }) {
+function Setup({ local, codeEnabled, onDone }: { local: boolean; codeEnabled: boolean; onDone: () => void }) {
   const f = useAccountForm();
+  const [code, setCode] = useState("");
   const { err, busy, run } = useSubmit(async () => {
     f.check();
-    await api.post("/api/auth/setup", { username: f.v.username, password: f.v.pw, display_name: f.v.name });
+    await api.post("/api/auth/setup", { username: f.v.username, password: f.v.pw, display_name: f.v.name, setup_code: local ? undefined : code });
     onDone();
   });
-  if (!local)
+  if (!local && !codeEnabled)
     return (
       <AuthShell>
         <Alert kind="warn" title="Ứng dụng chưa được thiết lập">
-          Tài khoản quản trị đầu tiên chỉ tạo được trên <b>chính máy tính chạy ứng dụng</b> (mở http://127.0.0.1:8000 trên máy đó).
+          Tài khoản quản trị đầu tiên chỉ tạo được trên <b>chính máy tính chạy ứng dụng</b> (mở http://127.0.0.1:8000 trên máy đó),
+          hoặc với <b>mã thiết lập</b> (biến <code>SETUP_CODE</code>) khi chạy trên máy chủ Internet.
         </Alert>
       </AuthShell>
     );
@@ -173,9 +177,14 @@ function Setup({ local, onDone }: { local: boolean; onDone: () => void }) {
           <p className="muted small">Tài khoản này quản lý ứng dụng: tạo tài khoản cho người khác, bật truy cập từ điện thoại.
             Dữ liệu bạn đã dùng trước đây (nếu có) sẽ được chuyển vào tài khoản này.</p>
         </div>
+        {!local && (
+          <label className="field"><span>Mã thiết lập</span>
+            <input className="input" type="password" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} />
+            <small className="subtle">Mã bạn đã đặt ở biến SETUP_CODE khi tạo máy chủ (chỉ dùng một lần cho tài khoản đầu tiên).</small></label>
+        )}
         <AccountFields v={f.v} set={f.set} />
         {err && <Alert kind="err">{err}</Alert>}
-        <button className="btn primary block lg" type="submit" disabled={busy || !f.v.username || !f.v.pw}>Tạo tài khoản &amp; bắt đầu</button>
+        <button className="btn primary block lg" type="submit" disabled={busy || !f.v.username || !f.v.pw || (!local && !code)}>Tạo tài khoản &amp; bắt đầu</button>
       </form>
     </AuthShell>
   );

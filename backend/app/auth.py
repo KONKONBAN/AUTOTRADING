@@ -21,6 +21,7 @@ import time
 
 from fastapi import Request
 
+from .config import settings
 from .db import get_db
 
 COOKIE = "at_session"
@@ -72,6 +73,12 @@ def client_ip(request: Request) -> str:
     """IP thật của người dùng. Chỉ tin header chuyển tiếp khi kết nối đến từ CHÍNH máy này (đường hầm cloudflared
     hoặc proxy cục bộ); máy khác trong mạng LAN tự gắn header X-Real-IP sẽ không né được giới hạn theo IP."""
     peer = request.client.host if request.client else "?"
+    hops = settings.proxy_hops
+    xff = [p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",") if p.strip()]
+    if hops > 0 and xff:
+        # máy chủ Internet: proxy của nhà cung cấp NỐI THÊM IP người dùng vào cuối danh sách → lấy theo số bước
+        # proxy tin cậy (phần đầu danh sách do trình duyệt tự gửi, giả mạo được)
+        return xff[-hops] if len(xff) >= hops else xff[0]
     try:
         trusted = peer == "testclient" or ipaddress.ip_address(peer).is_loopback
     except ValueError:
@@ -155,6 +162,20 @@ def create_user(username: str, password: str, display_name: str | None = None, r
     cur = db.execute("INSERT INTO users(username, display_name, password_hash, role, created_at) VALUES(?,?,?,?,?)",
                      (username, name, _hash_password(password), role, time.time()))
     return get_user(cur.lastrowid)
+
+
+def check_setup_code(code: str | None, ip: str) -> None:
+    """Mã thiết lập (SETUP_CODE) để tạo quản trị viên đầu tiên trên máy chủ Internet. Giới hạn đoán chung cho
+    mọi địa chỉ: 8 lần sai / 15 phút."""
+    if not settings.setup_code:
+        raise AuthError("Tài khoản quản trị đầu tiên chỉ tạo được trên chính máy tính chạy ứng dụng "
+                        "(hoặc đặt biến SETUP_CODE trên máy chủ).")
+    _reserve_attempt(["setup:any", f"setup:{ip}"])
+    if not code or not hmac.compare_digest(code.strip().encode(), settings.setup_code.encode()):
+        raise AuthError("Mã thiết lập không đúng.")
+    with _fail_lock:
+        _failures.pop("setup:any", None)
+        _failures.pop(f"setup:{ip}", None)
 
 
 def setup_admin(username: str, password: str, display_name: str | None = None) -> dict:

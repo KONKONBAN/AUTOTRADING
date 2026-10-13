@@ -202,6 +202,10 @@ def test_tunnel_start_stop_with_fake_cloudflared(tmp_path, monkeypatch):
                     "echo 'INF |  https://abc-def-ghi.trycloudflare.com  |'\nexec sleep 30\n")
     fake.chmod(0o755)
     monkeypatch.setattr(remote, "cloudflared_path", lambda: fake)
+    import dataclasses
+
+    from app import main as app_main
+    monkeypatch.setattr(app_main, "settings", dataclasses.replace(app_main.settings, enable_tunnel=True))
     c = _client(*TEST_USER[:2])
     try:
         st = c.post("/api/remote/tunnel/start").json()

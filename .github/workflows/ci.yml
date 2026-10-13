@@ -55,8 +55,6 @@ jobs:
           NO_BROWSER: "1"
           PORT: "8790"
         run: |
-          New-Item -ItemType Directory -Force .venv | Out-Null
-          Set-Content .venv\shortcut.asked "asked"
           $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "run.bat > launcher.log 2>&1" -PassThru -WindowStyle Hidden
           $ok = $false
           for ($i = 0; $i -lt 120; $i++) {
@@ -70,3 +68,27 @@ jobs:
           (Invoke-WebRequest http://127.0.0.1:8790/ -UseBasicParsing).StatusCode
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
+
+  docker-image:
+    name: Docker image runs (hosted web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t autotrading-ci .
+      - name: Start like Render (PORT, proxy, setup code) and create the first admin remotely
+        run: |
+          docker run -d --name at -p 8791:10000 -e PORT=10000 -e DATA_MODE=demo -e PROXY_HOPS=1 \
+            -e SETUP_CODE=ci-setup-code-123 -e PUBLIC_URL=https://autotrading-ci.example autotrading-ci
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8791/api/health && break; sleep 2; done
+          H=(-H "Host: autotrading-ci.example" -H "X-Forwarded-For: 113.161.1.2" -H "X-Forwarded-Proto: https" -H "Content-Type: application/json")
+          curl -fsS "${H[@]}" http://127.0.0.1:8791/api/auth/status | grep '"setup_code_enabled": true'
+          test "$(curl -s -o /dev/null -w '%{http_code}' "${H[@]}" -X POST http://127.0.0.1:8791/api/auth/setup \
+            -d '{"username":"chu.tk","password":"matkhau123","setup_code":"sai"}')" = 403
+          curl -fsS -D hdr "${H[@]}" -X POST http://127.0.0.1:8791/api/auth/setup \
+            -d '{"username":"chu.tk","password":"matkhau123","setup_code":"ci-setup-code-123"}'
+          grep -i '^set-cookie: at_session=.*secure' hdr   # sau proxy https → cookie phải có cờ Secure
+          TOKEN=$(grep -i '^set-cookie: at_session=' hdr | sed 's/.*at_session=\([^;]*\).*/\1/')
+          curl -fsS -H "Cookie: at_session=$TOKEN" "${H[@]}" http://127.0.0.1:8791/api/market/indices | grep VNINDEX
+          curl -fsS http://127.0.0.1:8791/ | grep -i "<div id=\"root\">"
+          docker exec at python manage.py list-users | grep chu.tk
+          docker logs at | tail -20

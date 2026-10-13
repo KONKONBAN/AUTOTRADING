@@ -18,9 +18,9 @@ rem ------------------------------------------------------------------
 rem  1. Tim Python 3.10 tro len: py launcher, python tren PATH, thu muc cai mac dinh
 rem ------------------------------------------------------------------
 set PYCMD=
-for %%C in ("py -3.13" "py -3.12" "py -3.11" "py -3.14" "py -3.10" "py -3" "python" "python3") do call :trypy %%C
-for %%V in (313 312 311 314 310) do call :trypath "%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe"
-for %%V in (313 312 311 314 310) do call :trypath "%ProgramFiles%\Python%%V\python.exe"
+for %%C in ("py -3.13" "py -3.12" "py -3.14" "py -3.15" "py -3.11" "py -3.10" "py -3" "python" "python3") do call :trypy %%C
+for %%V in (313 312 314 315 311 310) do call :trypath "%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe"
+for %%V in (313 312 314 315 311 310) do call :trypath "%ProgramFiles%\Python%%V\python.exe"
 
 if not defined PYCMD (
   echo.
@@ -76,14 +76,8 @@ if not exist "frontend\dist\index.html" (
   goto :fail
 )
 
-rem ------------------------------------------------------------------
-rem  5. Loi tat tren Desktop - hoi mot lan
-rem ------------------------------------------------------------------
-if not exist ".venv\shortcut.asked" (
-  echo asked> ".venv\shortcut.asked"
-  choice /C YN /T 20 /D N /M "Tao loi tat AutoTrading VN tren Desktop de lan sau bam mo nhanh? Y = Co, N = Khong"
-  if not errorlevel 2 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\make-shortcut.ps1" -AppDir "%~dp0."
-)
+rem  Khong tu tao loi tat bang PowerShell nua (phan mem diet virus hay chan kieu lenh nay).
+rem  Muon co loi tat: chuot phai run.bat - Send to - Desktop (create shortcut).
 
 echo [3/3] Khoi dong may chu - trinh duyet se tu mo...
 ".venv\Scripts\python.exe" launcher.py

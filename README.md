@@ -1,6 +1,6 @@
 # AutoTrading VN — Phân tích cổ phiếu, giao dịch tự động & AI Agent quản trị tài sản
 
-Ứng dụng **Web + App (cài được trên điện thoại)** cho nhà đầu tư chứng khoán Việt Nam, chạy trên máy tính Windows của bạn và mở được trên điện thoại:
+Ứng dụng **Web + App (cài được trên điện thoại & laptop)** cho nhà đầu tư chứng khoán Việt Nam — chạy trên **máy chủ Internet** (mở bằng trình duyệt ở bất cứ đâu) hoặc ngay trên **laptop Windows** của bạn:
 
 - **Phân tích cổ phiếu toàn diện** cho **mọi mã niêm yết** HOSE/HNX/UPCoM: kỹ thuật, cơ bản/kế toán, định giá, rủi ro → điểm tổng hợp 0–100 và khuyến nghị.
 - **Dữ liệu thật tự động**: giá từ KB Securities → Vietcap → VNDirect → CafeF (và SSI FastConnect / DNSE OpenAPI nếu bạn có khóa API), BCTC từ KBS → Vietcap. Khi không nguồn nào truy cập được, bạn **tải file lên** (Excel/CSV giá, Excel/ảnh/PDF BCTC, ảnh biểu đồ).
@@ -12,24 +12,68 @@
 
 ---
 
-## Bắt đầu nhanh trên Windows (không cần biết lập trình)
+## Cách A — Web trên Internet (khuyên dùng): mở bằng trình duyệt trên laptop & điện thoại, không cần cài gì
 
-1. Trên GitHub bấm **Code → Download ZIP**, rồi **chuột phải file ZIP → Extract All** (giải nén *toàn bộ*).
-2. Mở thư mục vừa giải nén, **bấm đúp `run.bat`**.
-   - Máy chưa có Python 3.10+ → cửa sổ sẽ hỏi cài tự động bằng *winget* (bấm **Y**); hoặc tự cài từ python.org và **tick "Add python.exe to PATH"**.
+Ứng dụng chạy trên một máy chủ có địa chỉ `https://…`; bạn chỉ cần mở trình duyệt (Chrome, Edge, Safari) và đăng nhập —
+không cài Python, không có cửa sổ đen, phần mềm diệt virus không chặn, laptop không cần bật. Repo đã có sẵn file cấu hình
+`render.yaml` cho dịch vụ **Render** (vùng **Singapore**, gần Việt Nam nhất).
+
+Chi phí: gói **Starter ~7 USD/tháng** + ổ lưu dữ liệu 1 GB ~0,25 USD/tháng (gói Free không có ổ lưu bền vững nên **mất dữ liệu** khi khởi động lại — không dùng được).
+
+1. **Chuẩn bị mã nguồn**: gộp (merge) Pull Request của ứng dụng vào nhánh `main` trên GitHub (hoặc dùng nhánh đang có ứng dụng).
+2. Vào **render.com → Sign up with GitHub** → cho phép Render truy cập repo `AUTOTRADING`.
+3. Trong Render: **New → Blueprint** → chọn repo `AUTOTRADING` (nhánh `main`) → Render đọc file `render.yaml` và hỏi 2 giá trị:
+   - **`SETUP_CODE`**: tự đặt một mã bí mật dài ≥ 12 ký tự (ví dụ `AnNguyen-2026-thiet-lap`). Mã này chỉ dùng **một lần** để tạo tài khoản quản trị đầu tiên.
+   - **`ANTHROPIC_API_KEY`** (tùy chọn): khóa Claude API cho AI Agent; để trống thì AI chạy chế độ cơ bản.
+   Bấm **Apply** → chờ 5–10 phút để Render xây dựng.
+4. Mở địa chỉ Render cấp (dạng `https://autotrading-vn.onrender.com`) → màn hình **Tạo tài khoản quản trị** → nhập **mã thiết lập** + tên đăng nhập + mật khẩu mạnh.
+5. Vào **Dữ liệu & nhập liệu → Nguồn tự động → Kiểm tra kết nối** để xem nguồn dữ liệu nào hoạt động từ máy chủ
+   (một số nguồn công khai có thể chặn địa chỉ IP nước ngoài; khi đó dùng nguồn chính thức SSI/DNSE bằng khóa API — thêm biến
+   `SSI_API_KEY`/`SSI_API_SECRET` trong **Render → Environment** — hoặc thuê máy chủ đặt tại Việt Nam và chạy bằng Docker).
+6. Trên điện thoại / laptop: mở cùng địa chỉ, **Thêm vào màn hình chính** (điện thoại) hoặc **Cài đặt ứng dụng** ở thanh địa chỉ Chrome/Edge (laptop) để có biểu tượng như phần mềm.
+
+Cập nhật phiên bản: mỗi lần nhánh `main` có mã mới, Render tự xây dựng lại; dữ liệu (tài khoản, danh mục, lệnh…) nằm trên ổ lưu
+`/app/backend/data` nên **không bị mất**. Quên mật khẩu: **Render → Shell** rồi chạy `python manage.py reset-password <tên-đăng-nhập>`.
+
+> Bảo mật khi lên Internet: mọi trang đều bắt buộc đăng nhập, đăng ký tự do **tắt** mặc định, sai mật khẩu nhiều lần bị tạm chặn,
+> cookie đăng nhập chỉ gửi qua https. Hãy dùng mật khẩu mạnh cho tài khoản quản trị.
+
+Chạy trên máy chủ khác (VPS, Railway…): dùng `Dockerfile` có sẵn —
+`docker run -d -p 8000:8000 -v autotrading-data:/app/backend/data -e SETUP_CODE=... --name autotrading autotrading`
+(đặt thêm `PROXY_HOPS=1` nếu đứng sau một reverse proxy như Nginx/Caddy), hoặc tạo quản trị viên bằng
+`docker exec -it autotrading python manage.py create-admin`.
+
+## Cách B — Chạy trên chính laptop Windows
+
+1. Trên GitHub bấm **Code → Download ZIP**.
+2. **Trước khi giải nén**: chuột phải file ZIP → **Properties** → đánh dấu **Unblock** (Bỏ chặn) → **OK**. Bước này gỡ nhãn
+   "tải từ Internet" để Windows Defender SmartScreen không chặn `run.bat`. Sau đó chuột phải → **Extract All** (giải nén *toàn bộ*).
+3. Mở thư mục vừa giải nén, **bấm đúp `run.bat`**.
+   - Nếu hiện màn hình xanh **"Windows protected your PC" (Windows đã bảo vệ máy tính của bạn)**: bấm **More info (Thông tin thêm) → Run anyway (Vẫn chạy)**.
+     `run.bat` là file văn bản — mở bằng Notepad để xem toàn bộ lệnh trước khi chạy.
+   - Máy chưa có Python 3.10+ → cửa sổ sẽ hỏi cài tự động bằng *winget* của Microsoft (bấm **Y**); hoặc tự cài từ python.org và **tick "Add python.exe to PATH"**.
    - Lần đầu tải thư viện mất 2–5 phút (cần Internet). Không cần Node.js — giao diện đã được build sẵn.
-   - Có thể chọn tạo **lối tắt trên Desktop** để lần sau mở nhanh.
-3. Trình duyệt tự mở **http://127.0.0.1:8000** → **tạo tài khoản quản trị** (chỉ làm được trên chính máy tính đang chạy ứng dụng).
-4. **Giữ cửa sổ đen mở** trong khi dùng; đóng cửa sổ là tắt ứng dụng. Dữ liệu lưu ở `backend/data/` — khi cập nhật phiên bản mới, giữ lại thư mục này (và file `.env`).
+4. Trình duyệt tự mở **http://127.0.0.1:8000** → **tạo tài khoản quản trị** (chỉ làm được trên chính máy tính đang chạy ứng dụng).
+5. **Giữ cửa sổ đen mở** trong khi dùng; đóng cửa sổ là tắt ứng dụng. Dữ liệu lưu ở `backend/data/` — khi cập nhật phiên bản mới, giữ lại thư mục này (và file `.env`).
+   Muốn có lối tắt: chuột phải `run.bat` → **Send to → Desktop (create shortcut)**.
+
+**Nếu Windows Defender vẫn chặn hoặc cửa sổ đen báo lỗi:**
+
+| Hiện tượng | Cách xử lý |
+|---|---|
+| Defender báo "Threat found / Đã chặn" và xóa file | **Windows Security → Virus & threat protection → Protection history** → chọn mục bị chặn → **Allow on device** (Cho phép); hoặc thêm thư mục ứng dụng vào **Exclusions**. Ứng dụng không còn tự tải file `.exe` hay chạy PowerShell ẩn. |
+| Lỗi ghi file / "Access denied" khi tạo `.venv` hoặc cơ sở dữ liệu | Tính năng **Controlled folder access** (chống ransomware) đang chặn ghi vào Documents/Desktop. Giải nén ứng dụng vào ổ `C:\AutoTrading` (hoặc `D:\AutoTrading`), hoặc cho phép `python.exe` trong **Ransomware protection → Allow an app**. |
+| Cửa sổ đen báo `[LOI] Cai thu vien that bai` | Kiểm tra Internet, xóa thư mục `.venv` rồi chạy lại `run.bat`. |
+| Trình duyệt không tự mở | Mở thủ công **http://127.0.0.1:8000** (cửa sổ đen ghi đúng địa chỉ/cổng đang dùng). |
 
 macOS / Linux: `./run.sh`.
 
 ## 1. Tài khoản, đăng nhập & mở trên điện thoại
 
 - **Tài khoản đầu tiên** là quản trị viên. Vào **Cài đặt & tài khoản → Quản lý người dùng** để tạo tài khoản cho người khác, khóa/mở khóa, đặt lại mật khẩu, hoặc bật cho phép **tự đăng ký**.
-- Mỗi tài khoản có tài khoản giấy, lịch sử lệnh, cấu hình Auto-Trader, đề xuất lệnh, hội thoại AI và ảnh biểu đồ **riêng**. Dữ liệu thị trường và BCTC dùng chung.
+- Mỗi tài khoản có tài khoản giấy, lịch sử lệnh, cấu hình Auto-Trader, đề xuất lệnh, hội thoại AI và ảnh biểu đồ **riêng**. Dữ liệu thị trường, giá và BCTC nhập tay dùng chung (chỉ quản trị viên được nhập/sửa).
 - Mật khẩu ≥ 8 ký tự gồm chữ và số, lưu dạng băm PBKDF2; sai quá 8 lần trong 15 phút sẽ bị tạm chặn. Có thể "ghi nhớ đăng nhập 30 ngày" và xem/đăng xuất từng thiết bị.
-- **Quên mật khẩu** (hoặc chạy bằng Docker/máy chủ): dùng công cụ dòng lệnh trong thư mục ứng dụng:
+- **Quên mật khẩu**: dùng công cụ dòng lệnh trong thư mục ứng dụng (trên Render: mở **Shell** và bỏ phần `.venv\Scripts\`):
 
   ```bat
   .venv\Scripts\python.exe manage.py list-users
@@ -37,12 +81,10 @@ macOS / Linux: `./run.sh`.
   .venv\Scripts\python.exe manage.py create-admin
   ```
 
-**Mở trên điện thoại** — trang **Cài đặt & tài khoản → Mở trên điện thoại** (quét mã QR):
-
-| Cách | Khi nào | Cách bật |
-|---|---|---|
-| **Qua Internet (4G, ở bất cứ đâu)** | Dùng ngoài nhà | Quản trị viên bấm **Bật** ngay trên máy tính: ứng dụng tải công cụ đường hầm chính thức của Cloudflare (~30 MB) và tạo địa chỉ `https://….trycloudflare.com` (đổi mỗi lần mở lại). Máy tính phải đang bật và chạy ứng dụng. |
-| **Cùng mạng Wi-Fi** | Ở nhà, nhanh nhất | Sửa `.env`: `HOST=0.0.0.0`, chạy lại `run.bat`, cho phép Windows Firewall ở "Private network". Mở địa chỉ `http://192.168.x.x:8000` hiển thị trong trang. |
+**Mở trên điện thoại**: với **Cách A** chỉ cần mở địa chỉ `https://…` (trang **Cài đặt & tài khoản → Mở trên điện thoại** có mã QR).
+Với **Cách B**: điện thoại cùng mạng Wi-Fi — sửa `.env`: `HOST=0.0.0.0`, chạy lại `run.bat`, cho phép Windows Firewall ở "Private network",
+rồi mở địa chỉ `http://192.168.x.x:8000` hiển thị trong trang. (Đường hầm Cloudflare tạm thời qua Internet vẫn có nhưng **tắt mặc định**
+vì phải tự tải file `.exe` — dễ bị phần mềm diệt virus chặn; bật bằng `ENABLE_TUNNEL=true` trong `.env` nếu cần.)
 
 Trên điện thoại: Chrome **⋮ → Thêm vào màn hình chính**, Safari **Chia sẻ → Thêm vào MH chính** để dùng như một ứng dụng. Mọi cách truy cập từ xa đều **bắt buộc đăng nhập**.
 
@@ -94,6 +136,10 @@ File `.env` được tạo tự động ở lần chạy đầu (mẫu: `.env.ex
 | `SSI_API_KEY` / `SSI_API_SECRET` | (Tùy chọn) Khóa SSI FastConnect Data — nguồn chính thức, ưu tiên cao nhất. |
 | `DNSE_API_KEY` / `DNSE_API_SECRET` | (Tùy chọn) Khóa DNSE OpenAPI. |
 | `HOST` / `PORT` | `127.0.0.1` = chỉ máy này (mặc định); `0.0.0.0` = cho điện thoại cùng Wi-Fi. Cổng bận thì ứng dụng tự chọn cổng khác. |
+| `SETUP_CODE` | (Máy chủ Internet) mã bí mật để tạo tài khoản quản trị đầu tiên từ xa — chỉ dùng được khi chưa có tài khoản nào. |
+| `PROXY_HOPS` | (Máy chủ Internet) số lớp proxy đứng trước ứng dụng để lấy đúng IP người dùng (Render: `1`). |
+| `PUBLIC_URL` | (Máy chủ Internet) địa chỉ công khai, hiển thị trong trang "Mở trên điện thoại" (Render tự đặt). |
+| `ENABLE_TUNNEL` | `false` (mặc định). `true` = bật đường hầm Cloudflare tạm thời (tự tải `cloudflared.exe`). |
 | `PAPER_INITIAL_CASH` | Vốn tài khoản giấy của mỗi tài khoản mới (mặc định 500 triệu). |
 | `ALLOW_LIVE_TRADING` | Mặc định `false`. Xem mục 7. |
 
@@ -107,7 +153,7 @@ cd frontend && npm run build                                            # build 
 ```
 
 Docker: `docker build -t autotrading . && docker run -d -p 8000:8000 -v autotrading-data:/app/backend/data --env-file .env --name autotrading autotrading`,
-rồi tạo quản trị viên: `docker exec -it autotrading python manage.py create-admin`.
+rồi tạo quản trị viên: `docker exec -it autotrading python manage.py create-admin` (xem thêm **Cách A** ở đầu tài liệu).
 
 ## 5. Dữ liệu: tự động trước, thủ công khi cần
 
@@ -164,6 +210,7 @@ backend/app/
 frontend/src/  React + TypeScript + Vite, biểu đồ TradingView Lightweight Charts & Recharts, PWA
 run.bat / run.sh / launcher.py   khởi động một chạm (Windows / macOS / Linux)
 manage.py                        quản lý tài khoản bằng dòng lệnh
+Dockerfile, render.yaml          chạy trên máy chủ Internet (Docker / Render)
 ```
 
 ## 9. Kiểm thử

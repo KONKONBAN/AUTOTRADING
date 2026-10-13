@@ -138,6 +138,7 @@ class SetupIn(BaseModel):
     username: str
     password: str
     display_name: str | None = None
+    setup_code: str | None = None  # chỉ cần khi tạo quản trị viên đầu tiên trên máy chủ Internet
 
 
 class LoginIn(BaseModel):
@@ -197,14 +198,20 @@ def _start_session(request: Request, response: Response, user: dict, remember: b
 @app.get("/api/auth/status")
 def auth_status(request: Request):
     return {"setup_required": auth.user_count() == 0, "registration_open": auth.registration_open(),
-            "local": auth.is_local(request), "user": getattr(request.state, "user", None),
+            "local": auth.is_local(request), "setup_code_enabled": bool(settings.setup_code),
+            "hosted": bool(settings.public_url), "user": getattr(request.state, "user", None),
             "ai_enabled": settings.has_anthropic_credentials}
 
 
 @app.post("/api/auth/setup")
 def auth_setup(body: SetupIn, request: Request, response: Response):
+    if auth.user_count() > 0:
+        raise HTTPException(400, "Ứng dụng đã có tài khoản quản trị.")
     if not auth.is_local(request):
-        raise HTTPException(403, "Tài khoản quản trị đầu tiên chỉ tạo được trên chính máy tính chạy ứng dụng.")
+        try:
+            auth.check_setup_code(body.setup_code, auth.client_ip(request))
+        except auth.AuthError as exc:
+            raise HTTPException(429 if "quá nhiều" in str(exc) else 403, str(exc)) from exc
     try:
         user = auth.setup_admin(body.username, body.password, body.display_name)
     except auth.AuthError as exc:
@@ -324,14 +331,17 @@ def admin_settings(body: AdminSettingsIn, request: Request):
 @app.get("/api/remote/info")
 def remote_info(request: Request):
     port = request.url.port or settings.port
-    return {"lan_urls": [f"http://{ip}:{port}" for ip in remote.lan_addresses()],
-            "lan_enabled": settings.host in {"0.0.0.0", "::"}, "tunnel": remote.status(),
-            "local": auth.is_local(request)}
+    return {"lan_urls": [f"http://{ip}:{port}" for ip in remote.lan_addresses()] if not settings.public_url else [],
+            "lan_enabled": settings.host in {"0.0.0.0", "::"} and not settings.public_url, "tunnel": remote.status(),
+            "tunnel_enabled": settings.enable_tunnel and not settings.public_url,
+            "public_url": settings.public_url or None, "local": auth.is_local(request)}
 
 
 @app.post("/api/remote/tunnel/start")
 async def tunnel_start(request: Request):
     _admin(request)
+    if not settings.enable_tunnel:
+        raise HTTPException(403, "Đường hầm đang tắt (ENABLE_TUNNEL=false) - hãy dùng bản web trên Internet.")
     if not auth.is_local(request):
         raise HTTPException(403, "Chỉ bật được trên chính máy tính chạy ứng dụng.")
     return await asyncio.to_thread(remote.start, request.url.port or settings.port)

@@ -4,8 +4,11 @@ import {
   type IChartApi, type ISeriesApi, type LogicalRange, type Time,
 } from "lightweight-charts";
 import { cssVar, useTheme } from "../lib/theme";
+import { readPalette, usePalette } from "../lib/palette";
 
 type Pt = { time: string; value: number };
+/** Màu dạng "var(--x)" → giá trị thật (canvas của lightweight-charts không hiểu biến CSS). */
+const resolve = (c: string) => (c.startsWith("var(") ? cssVar(c.slice(4, -1).trim()) || "#888888" : c);
 export type ChartData = {
   candles: { time: string; open: number; high: number; low: number; close: number }[];
   volume: { time: string; value: number; up: boolean }[];
@@ -21,7 +24,7 @@ function baseOptions(height: number) {
   return {
     height,
     autoSize: true,
-    layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: text, fontFamily: "Be Vietnam Pro, sans-serif", fontSize: 11 },
+    layout: { background: { type: ColorType.Solid, color: "transparent" }, textColor: text, fontFamily: "Inter, Be Vietnam Pro, sans-serif", fontSize: 11 },
     grid: { vertLines: { color: border, style: LineStyle.Dotted }, horzLines: { color: border, style: LineStyle.Dotted } },
     rightPriceScale: { borderColor: border, minimumWidth: 76 },  // cùng độ rộng → trục thời gian các khung thẳng hàng
     timeScale: { borderColor: border, rightOffset: 4, timeVisible: false },
@@ -30,14 +33,13 @@ function baseOptions(height: number) {
   };
 }
 
-const C = { ma20: "#f59e0b", ma50: "#3b82f6", ma200: "#a855f7", bb: "#64748b" };
-
 export function PriceChart({ data, overlays, height = 420, lines = [], showRsi = true, showMacd = true, fit = false }: {
   data: ChartData; overlays: Overlays; height?: number; lines?: PriceLine[]; showRsi?: boolean; showMacd?: boolean;
   /** true: hiển thị trọn khoảng thời gian đã chọn; false: chỉ ~180 phiên gần nhất (có thể cuộn) */
   fit?: boolean;
 }) {
   const { theme } = useTheme();
+  const C = usePalette();
   const mainRef = useRef<HTMLDivElement>(null);
   const rsiRef = useRef<HTMLDivElement>(null);
   const macdRef = useRef<HTMLDivElement>(null);
@@ -45,8 +47,8 @@ export function PriceChart({ data, overlays, height = 420, lines = [], showRsi =
 
   useEffect(() => {
     if (!mainRef.current) return;
-    const up = cssVar("--up");
-    const down = cssVar("--down");
+    const P = readPalette();
+    const { up, down } = P;
     const charts: IChartApi[] = [];
     // Các khung phụ (RSI, MACD) dùng CÙNG trục thời gian với nến: chèn điểm trống (whitespace) cho những
     // phiên chưa có giá trị chỉ báo, để đồng bộ theo chỉ số logic không bị lệch phiên.
@@ -59,18 +61,18 @@ export function PriceChart({ data, overlays, height = 420, lines = [], showRsi =
     charts.push(main);
     const candle = main.addCandlestickSeries({ upColor: up, downColor: down, borderVisible: false, wickUpColor: up, wickDownColor: down });
     candle.setData(data.candles as any);
-    lines.forEach((l) => candle.createPriceLine({ price: l.price, color: l.color, lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: l.title }));
+    lines.forEach((l) => candle.createPriceLine({ price: l.price, color: resolve(l.color), lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: l.title }));
     const addLine = (pts: Pt[], color: string, width = 1.5, style = LineStyle.Solid) => {
       const s = main.addLineSeries({ color, lineWidth: width as any, lineStyle: style, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       s.setData(pts as any);
       return s;
     };
-    if (overlays.ma20) addLine(data.sma20, C.ma20);
-    if (overlays.ma50) addLine(data.sma50, C.ma50);
-    if (overlays.ma200) addLine(data.sma200, C.ma200, 2);
+    if (overlays.ma20) addLine(data.sma20, P.ma20);
+    if (overlays.ma50) addLine(data.sma50, P.ma50);
+    if (overlays.ma200) addLine(data.sma200, P.ma200, 2);
     if (overlays.bb) {
-      addLine(data.bb_upper, C.bb, 1, LineStyle.Dashed);
-      addLine(data.bb_lower, C.bb, 1, LineStyle.Dashed);
+      addLine(data.bb_upper, P.bb, 1, LineStyle.Dashed);
+      addLine(data.bb_lower, P.bb, 1, LineStyle.Dashed);
     }
     if (overlays.volume) {
       const vol = main.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "vol", lastValueVisible: false, priceLineVisible: false });
@@ -91,7 +93,7 @@ export function PriceChart({ data, overlays, height = 420, lines = [], showRsi =
       charts.push(ch);
     };
     if (showRsi) sub(rsiRef.current, (ch) => {
-      const s = ch.addLineSeries({ color: "#8b5cf6", lineWidth: 2, priceLineVisible: false });
+      const s = ch.addLineSeries({ color: P.brand, lineWidth: 2, priceLineVisible: false });
       s.setData(pad(data.rsi) as any);
       s.createPriceLine({ price: 70, color: down, lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: "" });
       s.createPriceLine({ price: 30, color: up, lineStyle: LineStyle.Dotted, lineWidth: 1, axisLabelVisible: false, title: "" });
@@ -99,9 +101,9 @@ export function PriceChart({ data, overlays, height = 420, lines = [], showRsi =
     if (showMacd) sub(macdRef.current, (ch) => {
       const h = ch.addHistogramSeries({ priceLineVisible: false });
       h.setData(pad(data.macd_hist.map((p) => ({ ...p, color: p.value >= 0 ? up + "99" : down + "99" }))) as any);
-      const m = ch.addLineSeries({ color: "#0ea5e9", lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+      const m = ch.addLineSeries({ color: P.brand, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
       m.setData(pad(data.macd) as any);
-      const sg = ch.addLineSeries({ color: "#f59e0b", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+      const sg = ch.addLineSeries({ color: P.ma20, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
       sg.setData(pad(data.macd_signal) as any);
     });
     // đồng bộ cuộn/zoom giữa các biểu đồ
@@ -160,7 +162,8 @@ export function TimeChart({ series, height = 260, percent = false }: { series: L
             : new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 2 }).format(p),
       },
     } as any);
-    series.forEach((s) => {
+    series.forEach((s0) => {
+      const s = { ...s0, color: resolve(s0.color) };
       const opts = { lineWidth: (s.width ?? 2) as any, priceLineVisible: false, lastValueVisible: true };
       const ser = s.area
         ? ch.addAreaSeries({ ...opts, lineColor: s.color, topColor: s.color + "44", bottomColor: s.color + "00" })

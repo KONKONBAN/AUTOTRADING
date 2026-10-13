@@ -1,6 +1,7 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import AuthGate from "./components/AuthGate";
 import Layout from "./components/Layout";
+import { QuickTradeProvider } from "./components/QuickTrade";
 import { ToastProvider } from "./components/ui";
 import { StatusProvider } from "./lib/status";
 import { ThemeProvider } from "./lib/theme";
@@ -22,6 +23,7 @@ export default function App() {
         <AuthGate>
         <StatusProvider>
           <BrowserRouter>
+            <QuickTradeProvider>
             <Layout>
               <Routes>
                 <Route path="/" element={<Dashboard />} />
@@ -38,6 +40,7 @@ export default function App() {
                 <Route path="*" element={<Dashboard />} />
               </Routes>
             </Layout>
+            </QuickTradeProvider>
           </BrowserRouter>
         </StatusProvider>
         </AuthGate>

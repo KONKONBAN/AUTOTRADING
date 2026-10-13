@@ -5,8 +5,8 @@ import { api } from "../lib/api";
 import { isNum, money, num, pct, vnd } from "../lib/format";
 import { Alert, Badge, Card, Field, Kpi, Seg, Tabs, useAsync, useToast } from "../components/ui";
 
-const PIE = ["#14b8a6", "#3b82f6", "#f59e0b", "#eab308", "#64748b"];
-const tt = { background: "var(--surface-3)", border: "1px solid var(--border-strong)", borderRadius: 10 };
+const PIE = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-5)", "var(--chart-muted)"];
+const tt = { background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: 10, boxShadow: "var(--shadow-2)", color: "var(--text)" };
 
 function Planner() {
   const toast = useToast();
@@ -118,7 +118,7 @@ function Planner() {
                     <XAxis dataKey="years" tickFormatter={(y) => `${y} năm`} stroke="var(--text-3)" fontSize={11} />
                     <YAxis tickFormatter={(v) => money(v)} stroke="var(--text-3)" fontSize={10} width={70} />
                     <Tooltip formatter={(v: any) => money(Number(v))} labelFormatter={(y) => `Sau ${y} năm`} contentStyle={tt} />
-                    <Bar dataKey="value" fill="#14b8a6" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="value" fill="var(--chart-1)" radius={[6, 6, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>

@@ -25,7 +25,8 @@ from .data import excel_import, fundamentals, listing, providers, universe
 from .db import get_db
 from .finance import calculators, planner
 from .trading import backtest, engine
-from .trading.broker import OrderError, get_broker
+from .trading import vn_rules
+from .trading.broker import OrderError, get_broker, quote
 from .utils import clean
 
 log = logging.getLogger("autotrading")
@@ -389,6 +390,11 @@ def market():
     return services.market_overview()
 
 
+@app.get("/api/market/indices")
+def market_indices():
+    return services.market_indices()
+
+
 @app.get("/api/stocks/{ticker}/analysis")
 def stock_analysis(ticker: str, equity: float = 100_000_000):
     try:
@@ -601,6 +607,23 @@ def place_order(body: OrderIn):
                                         reason=body.reason, stop_loss=body.stop_loss, take_profit=body.take_profit)
     except OrderError as exc:
         _bad(exc)
+
+
+@app.get("/api/quote/{ticker}")
+def order_quote(ticker: str):
+    """Thông tin cho ô đặt lệnh nhanh: giá khớp gần nhất, tham chiếu/trần/sàn, bước giá, số dư khả dụng."""
+    ticker = ticker.strip().upper()
+    if not universe.is_listed(ticker) or providers.is_index(ticker):
+        raise HTTPException(404, f"Mã {ticker} không có trong danh sách niêm yết.")
+    try:
+        q = quote(ticker)
+    except (OrderError, providers.DataUnavailable) as exc:
+        _bad(exc)
+    acc = get_broker().account()
+    pos = next((p for p in acc["positions"] if p["ticker"] == ticker), None)
+    info = universe.info(ticker)
+    return {**q, "ticker": ticker, "name": info["name"], "tick": vn_rules.tick_size(q["last"], q["exchange"]),
+            "cash": acc["cash"], "held": pos["quantity"] if pos else 0, "sellable": pos.get("sellable", 0) if pos else 0}
 
 
 @app.get("/api/orders")

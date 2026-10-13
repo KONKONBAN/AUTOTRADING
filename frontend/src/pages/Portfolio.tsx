@@ -4,7 +4,7 @@ import { History, PieChart as PieIcon, RotateCcw, Sigma, Wallet } from "lucide-r
 import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from "recharts";
 import { api } from "../lib/api";
 import { useStatus } from "../lib/status";
-import { cls, money, num, pct, tone, vnd } from "../lib/format";
+import { cls, money, num, pct, ptone, tone, vnd } from "../lib/format";
 import { TimeChart } from "../components/Charts";
 import { Alert, Badge, Card, Empty, ErrorBox, Field, Kpi, Loading, Seg, TickerCell, useAsync, useToast } from "../components/ui";
 
@@ -86,10 +86,10 @@ function Optimizer() {
                     <XAxis type="number" dataKey="volatility" name="Rủi ro" tickFormatter={(x) => pct(x, 0)} stroke="var(--text-3)" fontSize={11} />
                     <YAxis type="number" dataKey="return" name="Lợi nhuận" tickFormatter={(x) => pct(x, 0)} stroke="var(--text-3)" fontSize={11} />
                     <ZAxis range={[40, 40]} />
-                    <Tooltip formatter={(x: any) => pct(Number(x))} contentStyle={{ background: "var(--surface-3)", border: "1px solid var(--border-strong)", borderRadius: 10 }} />
-                    <Scatter name="Biên hiệu quả" data={res.frontier} fill="#0ea5e9" line={{ stroke: "#0ea5e9" }} />
-                    <Scatter name="Từng mã" data={res.weights.map((w: any) => ({ volatility: w.volatility, return: w.expected_return }))} fill="#94a3b8" />
-                    <Scatter name="Danh mục tối ưu" data={[{ volatility: res.volatility, return: res.expected_return }]} fill="#22c55e" shape="star" />
+                    <Tooltip formatter={(x: any) => pct(Number(x))} contentStyle={{ background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: 10, boxShadow: "var(--shadow-2)", color: "var(--text)" }} />
+                    <Scatter name="Biên hiệu quả" data={res.frontier} fill="var(--chart-2)" line={{ stroke: "var(--chart-2)" }} />
+                    <Scatter name="Từng mã" data={res.weights.map((w: any) => ({ volatility: w.volatility, return: w.expected_return }))} fill="var(--chart-muted)" />
+                    <Scatter name="Danh mục tối ưu" data={[{ volatility: res.volatility, return: res.expected_return }]} fill="var(--chart-3)" shape="star" />
                   </ScatterChart>
                 </ResponsiveContainer>
               </div>
@@ -132,7 +132,7 @@ export default function Portfolio() {
       {pf.loading ? <Loading /> : pf.error ? <ErrorBox error={pf.error} onRetry={pf.reload} /> : (
         <>
           <div className="grid g4">
-            <Kpi label="Tổng tài sản (NAV)" icon={<Wallet size={17} />} value={money(acc.equity)} sub={<span className={tone(acc.total_return)}>{pct(acc.total_return, 2, true)} · vốn đầu {money(acc.initial_cash)}</span>} />
+            <Kpi label="Tổng tài sản (NAV)" icon={<Wallet size={17} />} value={money(acc.equity)} sub={<span className={ptone(acc.total_return)}>{pct(acc.total_return, 2, true)} · vốn đầu {money(acc.initial_cash)}</span>} />
             <Kpi label="Giá trị cổ phiếu" value={money(acc.market_value)} sub={<span className="muted">Tỷ trọng {pct(acc.exposure, 0)}</span>} />
             <Kpi label="Lãi/lỗ" value={money(acc.unrealized_pnl + acc.realized_pnl)} valueClass={tone(acc.unrealized_pnl + acc.realized_pnl)}
               sub={<span className="muted">Chưa TH {money(acc.unrealized_pnl)} · Đã TH {money(acc.realized_pnl)}</span>} />
@@ -140,7 +140,7 @@ export default function Portfolio() {
           </div>
           {acc.equity_history.length > 1 && (
             <Card title="Diễn biến tài sản" icon={<History size={16} />}>
-              <TimeChart height={240} series={[{ name: "NAV", color: "#2dd4bf", area: true, data: acc.equity_history.map((h: any) => ({ time: h.date, value: h.equity })) }]} />
+              <TimeChart height={240} series={[{ name: "NAV", color: "var(--chart-1)", area: true, data: acc.equity_history.map((h: any) => ({ time: h.date, value: h.equity })) }]} />
             </Card>
           )}
           <Card title="Vị thế đang nắm giữ" icon={<PieIcon size={16} />} actions={<Link to="/autotrader" className="btn sm">Auto-Trader</Link>}>

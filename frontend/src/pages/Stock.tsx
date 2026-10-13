@@ -102,9 +102,9 @@ export default function Stock() {
     return { ...c, candles: cut(c.candles), volume: cut(c.volume), sma20: after(c.sma20), sma50: after(c.sma50), sma200: after(c.sma200), bb_upper: after(c.bb_upper), bb_lower: after(c.bb_lower), rsi: after(c.rsi), macd: after(c.macd), macd_signal: after(c.macd_signal), macd_hist: after(c.macd_hist) };
   }, [d, period, cd]);
   const lines = useMemo(() => (d && showLevels ? [
-    { price: Math.round(d.trade_plan.stop_loss), title: "Cắt lỗ", color: "#f43f5e" },
-    { price: Math.round(d.trade_plan.take_profit_1), title: "Mục tiêu 1", color: "#22c55e" },
-    ...(d.valuation.intrinsic_value ? [{ price: Math.round(d.valuation.intrinsic_value), title: "Giá trị nội tại", color: "#f59e0b" }] : []),
+    { price: Math.round(d.trade_plan.stop_loss), title: "Cắt lỗ", color: "var(--down)" },
+    { price: Math.round(d.trade_plan.take_profit_1), title: "Mục tiêu 1", color: "var(--up)" },
+    ...(d.valuation.intrinsic_value ? [{ price: Math.round(d.valuation.intrinsic_value), title: "Giá trị nội tại", color: "var(--chart-3)" }] : []),
   ] : []), [d, showLevels]);
 
   if (a.loading) return <Loading text={`Đang phân tích ${ticker}: kỹ thuật, cơ bản, định giá, rủi ro…`} height={400} />;
@@ -373,10 +373,10 @@ export default function Stock() {
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
                   <XAxis type="number" tickFormatter={(x) => vnd(x)} stroke="var(--text-3)" fontSize={11} />
                   <YAxis type="category" dataKey="model" width={170} stroke="var(--text-3)" fontSize={11} />
-                  <Tooltip formatter={(x: any) => vnd(Number(x)) + "đ"} contentStyle={{ background: "var(--surface-3)", border: "1px solid var(--border-strong)", borderRadius: 10 }} />
-                  <ReferenceLine x={v.price} stroke="#f43f5e" strokeDasharray="4 4" label={{ value: "Thị giá", fill: "#f43f5e", fontSize: 11, position: "top" }} />
+                  <Tooltip formatter={(x: any) => vnd(Number(x)) + "đ"} contentStyle={{ background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: 10, boxShadow: "var(--shadow-2)", color: "var(--text)" }} />
+                  <ReferenceLine x={v.price} stroke="var(--down)" strokeDasharray="4 4" label={{ value: "Thị giá", fill: "var(--down)", fontSize: 11, position: "top" }} />
                   <Bar dataKey="value" radius={[0, 6, 6, 0]}>
-                    {v.models.map((m: any, i: number) => <Cell key={i} fill={m.value >= v.price ? "#22c55e" : "#f59e0b"} />)}
+                    {v.models.map((m: any, i: number) => <Cell key={i} fill={m.value >= v.price ? "var(--up)" : "var(--chart-3)"} />)}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>

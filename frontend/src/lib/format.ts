@@ -21,8 +21,10 @@ export function money(x: unknown): string {
 
 export function pct(x: unknown, digits = 1, sign = false): string {
   if (!isNum(x)) return "—";
-  const s = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(x * 100);
-  return `${sign && x > 0 ? "+" : ""}${s}%`;
+  // làm tròn trước để tránh hiển thị "-0,00%" với số âm rất nhỏ
+  const v = Math.round(x * 100 * 10 ** digits) / 10 ** digits || 0;
+  const s = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(v);
+  return `${sign && v > 0 ? "+" : ""}${s}%`;
 }
 
 export function num(x: unknown, digits = 2): string {
@@ -39,12 +41,14 @@ export function bn(x: unknown): string {
 export const cls = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
 
 export const tone = (x: unknown) => (!isNum(x) || x === 0 ? "ref" : x > 0 ? "up" : "down");
+/** Màu cho tỷ lệ % theo đúng giá trị HIỂN THỊ (đã làm tròn): tránh "0,00%" mà vẫn tô đỏ. */
+export const ptone = (x: unknown, digits = 2) => (isNum(x) ? tone(Math.round(x * 100 * 10 ** digits)) : "ref");
 
 export function scoreColor(s: number): string {
   if (s >= 72) return "var(--up)";
-  if (s >= 60) return "#84cc16";
+  if (s >= 60) return "var(--brand)";
   if (s >= 45) return "var(--ref)";
-  if (s >= 35) return "#fb923c";
+  if (s >= 35) return "var(--warn)";
   return "var(--down)";
 }
 
@@ -55,12 +59,6 @@ export function recTone(code?: string): string {
   return "ref";
 }
 
-const PALETTE = ["#0d9488", "#2563eb", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2", "#9333ea", "#ca8a04", "#dc2626"];
-export function tickerColor(t: string): string {
-  let h = 0;
-  for (const c of t) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return PALETTE[h % PALETTE.length];
-}
 
 export const SOURCE_LABEL: Record<string, string> = {
   demo: "DEMO",

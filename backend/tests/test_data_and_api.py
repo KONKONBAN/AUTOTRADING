@@ -119,3 +119,21 @@ def test_finance_endpoints(client):
     calc = client.post("/api/finance/calc", json={"calculator": "bond_ytm", "params": {
         "price": 1_035_000, "face": 1_000_000, "coupon_rate": 0.1, "years": 2}}).json()
     assert calc["result"] == pytest.approx(0.0804, abs=1e-4)
+
+
+def test_market_indices_strip(client):
+    rows = client.get("/api/market/indices").json()
+    assert [r["symbol"] for r in rows] == ["VNINDEX", "VN30", "HNXINDEX", "UPCOMINDEX"]
+    for r in rows:
+        assert r["available"], r
+        assert r["price"] > 0 and len(r["spark"]) == 30
+        assert r["change"] == pytest.approx(r["price"] - r["spark"][-2], abs=0.02)
+
+
+def test_quote_for_quick_order(client):
+    q = client.get("/api/quote/hpg").json()
+    assert q["ticker"] == "HPG" and q["exchange"] == "HOSE"
+    assert q["limits"]["floor"] < q["limits"]["reference"] < q["limits"]["ceiling"]
+    assert q["tick"] in (10, 50, 100) and q["cash"] > 0 and q["held"] >= q["sellable"] >= 0
+    assert client.get("/api/quote/VNINDEX").status_code == 404   # chỉ số không đặt lệnh được
+    assert client.get("/api/quote/ZZZZ").status_code == 404

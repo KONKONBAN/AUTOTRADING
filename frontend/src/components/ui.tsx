@@ -1,6 +1,6 @@
 import { Component, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, Info, UploadCloud, XCircle } from "lucide-react";
-import { cls, scoreColor, sourceLabel, tickerColor } from "../lib/format";
+import { cls, scoreColor, sourceLabel } from "../lib/format";
 
 /* ------------------------------------------------------------------ data hook */
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
@@ -254,7 +254,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
 /* ------------------------------------------------------------------ ticker */
 export function TickerLogo({ ticker, size = 32 }: { ticker: string; size?: number }) {
   return (
-    <span className="ticker-logo" style={{ background: tickerColor(ticker), width: size, height: size }}>
+    <span className="ticker-logo" style={{ width: size, height: size, fontSize: size <= 28 ? 9.5 : undefined }}>
       {ticker.slice(0, 3)}
     </span>
   );

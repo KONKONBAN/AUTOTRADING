@@ -42,7 +42,7 @@ def ttl_cache(seconds: int):
 
 
 def clear_caches() -> None:
-    for fn in (market_overview, sector_multiples, analyze_stock, screen):
+    for fn in (market_overview, market_indices, sector_multiples, analyze_stock, screen):
         fn.cache_clear()
 
 
@@ -51,6 +51,30 @@ def market_overview() -> dict:
     df = providers.get_history("VNINDEX", days=750)
     out = market_timing.analyze(df)
     out["source"] = df.attrs.get("source")
+    return out
+
+
+MARKET_INDICES = ("VNINDEX", "VN30", "HNXINDEX", "UPCOMINDEX")
+INDEX_LABELS = {"VNINDEX": "VN-Index", "VN30": "VN30", "HNXINDEX": "HNX-Index", "UPCOMINDEX": "UPCoM-Index"}
+
+
+@ttl_cache(300)
+def market_indices() -> list[dict]:
+    """Dải chỉ số thị trường cho trang Tổng quan: điểm, thay đổi so với phiên trước, 30 phiên gần nhất."""
+    out = []
+    for sym in MARKET_INDICES:
+        item = {"symbol": sym, "name": INDEX_LABELS[sym], "available": False}
+        try:
+            df = providers.get_history(sym, days=60)
+            close = df["close"].dropna()
+            if len(close) >= 2:
+                last, prev = float(close.iloc[-1]), float(close.iloc[-2])
+                item.update(available=True, price=last, change=last - prev, change_pct=last / prev - 1 if prev else None,
+                            date=str(close.index[-1].date()), spark=[round(float(x), 2) for x in close.iloc[-30:]],
+                            source=df.attrs.get("source"))
+        except Exception as exc:  # noqa: BLE001 - một chỉ số lỗi không chặn các chỉ số khác
+            log.info("Không tải được %s: %s", sym, exc)
+        out.append(item)
     return out
 
 

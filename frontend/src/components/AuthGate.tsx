@@ -48,14 +48,17 @@ export function AuthShell({ children, wide }: { children: ReactNode; wide?: bool
     <div className="auth-page">
       <section className="auth-hero">
         <div className="auth-brand"><img src="/icon.svg" alt="" /><span>AutoTrading <b>VN</b></span></div>
-        <h1>Đầu tư chứng khoán có kỷ luật, dựa trên dữ liệu.</h1>
+        <h1>Quản lý tài sản và đầu tư chứng khoán có kỷ luật, dựa trên dữ liệu.</h1>
         <ul>
           <li><BarChart3 size={18} /> Phân tích kỹ thuật, cơ bản, định giá và rủi ro cho từng mã</li>
           <li><Wallet size={18} /> Danh mục, kế hoạch giao dịch và Auto-Trader trên tài khoản giấy</li>
           <li><Bot size={18} /> AI Agent quản trị tài sản và tài chính cá nhân</li>
           <li><ShieldCheck size={18} /> Dữ liệu của mỗi tài khoản được tách riêng và bảo vệ bằng mật khẩu</li>
         </ul>
-        <p className="auth-note">Thông tin chỉ mang tính tham khảo, không phải lời khuyên đầu tư.</p>
+        <p className="auth-note">
+          Công cụ độc lập, không liên kết với bất kỳ ngân hàng hay công ty chứng khoán nào. Lệnh khớp trên tài khoản giao dịch giấy (giả lập);
+          thông tin chỉ mang tính tham khảo, không phải lời khuyên đầu tư.
+        </p>
       </section>
       <section className="auth-panel">
         <div className={wide ? "auth-card wide" : "auth-card"}>{children}</div>

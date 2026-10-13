@@ -1,5 +1,5 @@
 // Service worker tối giản: cache giao diện để mở nhanh & dùng như app; API luôn lấy mới.
-const CACHE = "autotrading-v1";
+const CACHE = "autotrading-v2";
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(["/", "/manifest.webmanifest", "/icon.svg"])));
   self.skipWaiting();

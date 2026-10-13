@@ -1,22 +1,26 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
-  Bot, BookOpen, Database, Filter, LayoutDashboard, LineChart, LogOut, Menu, Moon, PiggyBank, RefreshCw, Search, Settings as SettingsIcon, Sun, Wallet, Zap,
-  type LucideIcon,
+  ArrowLeftRight, Bot, BookOpen, Database, Filter, LayoutDashboard, LineChart, LogOut, Menu, Moon, PiggyBank, RefreshCw, Search,
+  Settings as SettingsIcon, Sun, Wallet, Zap, type LucideIcon,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useStatus } from "../lib/status";
 import { useTheme } from "../lib/theme";
 import { cls, sourceLabel } from "../lib/format";
 import { useAuth } from "./AuthGate";
+import { useQuickTrade } from "./QuickTrade";
 import { Badge, ErrorBoundary, TickerLogo, useToast } from "./ui";
+
+export const DISCLAIMER = "AutoTrading VN là công cụ độc lập, không liên kết với bất kỳ ngân hàng hay công ty chứng khoán nào. "
+  + "Lệnh được khớp trên tài khoản giao dịch giấy (giả lập); thông tin chỉ mang tính tham khảo, không phải khuyến nghị đầu tư.";
 
 type NavItem = { to: string; label: string; icon: LucideIcon; end?: boolean; mobile?: string };
 const NAV: { section: string; items: NavItem[] }[] = [
   {
     section: "Thị trường",
     items: [
-      { to: "/", label: "Tổng quan", icon: LayoutDashboard, end: true, mobile: "Tổng quan" },
+      { to: "/", label: "Tổng quan", icon: LayoutDashboard, end: true, mobile: "Trang chủ" },
       { to: "/stock", label: "Phân tích cổ phiếu", icon: LineChart, mobile: "Phân tích" },
       { to: "/screener", label: "Bộ lọc & xếp hạng", icon: Filter },
     ],
@@ -25,13 +29,13 @@ const NAV: { section: string; items: NavItem[] }[] = [
     section: "Đầu tư",
     items: [
       { to: "/portfolio", label: "Danh mục & tối ưu", icon: Wallet },
-      { to: "/autotrader", label: "Giao dịch tự động", icon: Zap, mobile: "Tự động" },
+      { to: "/autotrader", label: "Giao dịch tự động", icon: Zap },
     ],
   },
   {
     section: "Trợ lý",
     items: [
-      { to: "/agent", label: "AI Agent tài sản", icon: Bot, mobile: "AI Agent" },
+      { to: "/agent", label: "AI Agent tài sản", icon: Bot, mobile: "Trợ lý AI" },
       { to: "/finance", label: "Tài chính cá nhân", icon: PiggyBank },
       { to: "/knowledge", label: "Kiến thức nền tảng", icon: BookOpen },
     ],
@@ -45,6 +49,7 @@ const NAV: { section: string; items: NavItem[] }[] = [
   },
 ];
 const ALL_ITEMS = NAV.flatMap((s) => s.items);
+const MOBILE = ALL_ITEMS.filter((n) => n.mobile);
 
 function TickerSearch() {
   const { universe } = useStatus();
@@ -85,7 +90,7 @@ function TickerSearch() {
       <input
         ref={ref}
         className="input"
-        placeholder="Tìm mã cổ phiếu, tên công ty, ngành…  (Ctrl+K)"
+        placeholder={window.innerWidth < 920 ? "Tìm mã cổ phiếu…" : "Tìm mã cổ phiếu, công ty, ngành…  (Ctrl+K)"}
         value={q}
         onChange={(e) => { setQ(e.target.value); setIdx(0); setOpen(true); }}
         onFocus={() => setOpen(true)}
@@ -130,8 +135,10 @@ export default function Layout({ children }: { children: ReactNode }) {
   const { theme, toggle } = useTheme();
   const { status, refresh } = useStatus();
   const toast = useToast();
+  const quickTrade = useQuickTrade();
   const [busy, setBusy] = useState(false);
   const [more, setMore] = useState(false);
+  useEffect(() => setMore(false), [location.pathname]);
   const src = status?.data.source;
   const demo = src === "demo";
   const doRefresh = async () => {
@@ -157,6 +164,9 @@ export default function Layout({ children }: { children: ReactNode }) {
             <div className="brand-sub">Quản trị tài sản thông minh</div>
           </div>
         </div>
+        <button className="btn primary block" style={{ margin: "0 2px 6px", width: "auto" }} onClick={() => quickTrade()}>
+          <ArrowLeftRight size={16} /> Đặt lệnh nhanh
+        </button>
         {NAV.map((s) => (
           <div key={s.section}>
             <div className="nav-section">{s.section}</div>
@@ -181,18 +191,26 @@ export default function Layout({ children }: { children: ReactNode }) {
           </div>
           <div className="row between" style={{ marginTop: 10 }}>
             <span>Nguồn dữ liệu</span>
-            <Badge tone={demo ? "warn" : "up"}><span className={cls("dot", !demo && "pulse")} />{sourceLabel(src)}</Badge>
+            <Badge tone={demo || src === "none" ? "warn" : "up"}><span className={cls("dot", !demo && "pulse")} />{sourceLabel(src)}</Badge>
           </div>
-          <div className="tiny subtle" style={{ marginTop: 6 }}>Cập nhật: {status?.data.last_date ?? "—"} · v{status?.version ?? ""}</div>
+          <div className="tiny subtle" style={{ marginTop: 6 }}>Phiên gần nhất: {status?.data.last_date ?? "—"} · v{status?.version ?? ""}</div>
+          <div className="tiny subtle" style={{ marginTop: 8, lineHeight: 1.45 }} title={DISCLAIMER}>Công cụ độc lập · giao dịch giả lập · không phải khuyến nghị đầu tư.</div>
         </div>
       </aside>
       <div className="main">
         <header className="topbar">
+          <NavLink to="/" className="show-mobile" title="Tổng quan"><img src="/icon.svg" alt="AutoTrading VN" width={32} height={32} style={{ borderRadius: 9 }} /></NavLink>
           <TickerSearch />
           <div className="grow hide-mobile" />
           {status && (
-            <span className="hide-mobile">
-              <Badge tone={status.ai_enabled ? "brand" : ""}><Bot size={12} /> {status.ai_enabled ? "AI Agent: bật" : "AI: chế độ cơ bản"}</Badge>
+            <span className="status-chip hide-mobile" title={status.data.message}>
+              <span className={cls("dot", !demo && src !== "none" && "pulse")} style={{ color: demo || src === "none" ? "var(--warn)" : "var(--up)" }} />
+              Dữ liệu: <b>{sourceLabel(src)}</b> · {status.data.last_date ?? "—"}
+            </span>
+          )}
+          {status && (
+            <span className="status-chip hide-mobile" title={status.ai_enabled ? `Mô hình: ${status.ai_model}` : "Chưa cấu hình khóa AI - dùng chế độ cơ bản"}>
+              <Bot size={14} style={{ color: status.ai_enabled ? "var(--brand)" : "var(--text-3)" }} /> {status.ai_enabled ? "AI: bật" : "AI: cơ bản"}
             </span>
           )}
           <button className="btn icon ghost" title="Làm mới dữ liệu" onClick={doRefresh} disabled={busy}>
@@ -205,15 +223,25 @@ export default function Layout({ children }: { children: ReactNode }) {
         </header>
         <main className="content"><ErrorBoundary key={location.pathname}>{children}</ErrorBoundary></main>
       </div>
-      <nav className="mobile-nav">
-        {ALL_ITEMS.filter((n) => n.mobile).map((n) => (
-          <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => cls(isActive && "active")} onClick={() => setMore(false)}>
-            <n.icon size={20} />
+      <nav className="mobile-nav" aria-label="Điều hướng chính">
+        {MOBILE.slice(0, 2).map((n) => (
+          <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => cls(isActive && "active")}>
+            <n.icon size={21} />
+            {n.mobile}
+          </NavLink>
+        ))}
+        <button className="center-action" onClick={() => { setMore(false); quickTrade(); }}>
+          <span className="ca-btn"><ArrowLeftRight size={22} /></span>
+          Đặt lệnh
+        </button>
+        {MOBILE.slice(2).map((n) => (
+          <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => cls(isActive && "active")}>
+            <n.icon size={21} />
             {n.mobile}
           </NavLink>
         ))}
         <a href="#more" className={cls(more && "active")} onClick={(e) => { e.preventDefault(); setMore((m) => !m); }}>
-          <Menu size={20} /> Thêm
+          <Menu size={21} /> Thêm
         </a>
       </nav>
       {more && (

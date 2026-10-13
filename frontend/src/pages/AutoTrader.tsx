@@ -79,10 +79,10 @@ function Backtest() {
             ))}
           </div>
           <TimeChart height={280} series={[
-            { name: "Chiến lược", color: "#2dd4bf", area: true, data: res.equity_curve.map((c: any) => ({ time: c.date, value: c.equity })) },
-            { name: "VN-Index", color: "#94a3b8", width: 1, data: res.equity_curve.map((c: any) => ({ time: c.date, value: c.benchmark_equity })) },
+            { name: "Chiến lược", color: "var(--chart-1)", area: true, data: res.equity_curve.map((c: any) => ({ time: c.date, value: c.equity })) },
+            { name: "VN-Index", color: "var(--chart-muted)", width: 1, data: res.equity_curve.map((c: any) => ({ time: c.date, value: c.benchmark_equity })) },
           ]} />
-          <div className="row small subtle" style={{ gap: 14 }}><span><i className="legend-dot" style={{ background: "#2dd4bf" }} />Chiến lược</span><span><i className="legend-dot" style={{ background: "#94a3b8" }} />Mua & nắm giữ VN-Index</span><span>Nguồn dữ liệu: {res.data_source}</span></div>
+          <div className="row small subtle" style={{ gap: 14 }}><span><i className="legend-dot" style={{ background: "var(--chart-1)" }} />Chiến lược</span><span><i className="legend-dot" style={{ background: "var(--chart-muted)" }} />Mua & nắm giữ VN-Index</span><span>Nguồn dữ liệu: {res.data_source}</span></div>
           <Alert kind="info">{res.disclaimer}</Alert>
           <div className="table-wrap" style={{ maxHeight: 320 }}>
             <table className="tbl">

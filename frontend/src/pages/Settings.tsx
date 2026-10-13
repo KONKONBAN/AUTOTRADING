@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { Copy, Globe, KeyRound, LogOut, Monitor, RefreshCw, Shield, Smartphone, Trash2, UserPlus, Users, Wifi } from "lucide-react";
+import { Copy, Globe, KeyRound, LogOut, Monitor, Palette, RefreshCw, Shield, Smartphone, Trash2, UserPlus, Users, Wifi } from "lucide-react";
 import qrcode from "qrcode-generator";
 import { useAuth } from "../components/AuthGate";
-import { Alert, Badge, Card, Field, Loading, Switch, Tabs, useToast } from "../components/ui";
+import { Alert, Badge, Card, Field, Loading, Seg, Switch, Tabs, useToast } from "../components/ui";
+import { DISCLAIMER } from "../components/Layout";
 import { api } from "../lib/api";
+import { useTheme } from "../lib/theme";
 
 type Tunnel = { running: boolean; starting: boolean; url: string | null; error: string | null; installed: boolean; log: string[] };
 type Info = { lan_urls: string[]; lan_enabled: boolean; tunnel: Tunnel; local: boolean };
@@ -85,6 +87,7 @@ function MyAccount() {
           <div><button className="btn primary" disabled={!cur || !pw} onClick={changePw}>Đổi mật khẩu</button></div>
         </div>
       </Card>
+      <Appearance />
       <Card className="span-2" title="Thiết bị đang đăng nhập" icon={<Monitor size={16} />}>
         {!sessions ? <Loading height={80} /> : (
           <div className="table-wrap"><table className="table">
@@ -103,6 +106,23 @@ function MyAccount() {
 }
 
 // ------------------------------------------------------------------ Quản lý người dùng (quản trị)
+function Appearance() {
+  const { theme, setTheme, size, setSize } = useTheme();
+  return (
+    <Card className="span-2" title="Giao diện" icon={<Palette size={16} />} hint="Lưu riêng trên thiết bị này">
+      <div className="row wrap" style={{ gap: 28 }}>
+        <Field label="Chủ đề">
+          <Seg value={theme} onChange={setTheme} items={[{ value: "light", label: "Sáng" }, { value: "dark", label: "Tối chuyên nghiệp" }]} />
+        </Field>
+        <Field label="Cỡ chữ">
+          <Seg value={size} onChange={setSize} items={[{ value: "md", label: "Tiêu chuẩn" }, { value: "lg", label: "Chữ lớn" }]} />
+        </Field>
+      </div>
+      <div className="tiny subtle" style={{ marginTop: 14 }}>{DISCLAIMER}</div>
+    </Card>
+  );
+}
+
 function UsersAdmin() {
   const { user: me } = useAuth();
   const toast = useToast();

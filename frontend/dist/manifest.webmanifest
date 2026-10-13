@@ -4,8 +4,8 @@
   "description": "Phân tích cổ phiếu, giao dịch tự động và AI Agent quản trị tài sản",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0b1220",
-  "theme_color": "#0b1220",
+  "background_color": "#f4f7f6",
+  "theme_color": "#0a7a63",
   "lang": "vi",
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },

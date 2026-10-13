@@ -116,8 +116,7 @@ def main() -> None:
     print("=" * 64)
     print("  AutoTrading VN - Phân tích cổ phiếu & AI quản trị tài sản")
     print(f"  Địa chỉ trên máy này : http://127.0.0.1:{port}")
-    if host in {"0.0.0.0", "::"}:
-        print("  Điện thoại cùng Wi-Fi: xem trang 'Cài đặt & điện thoại' (cần đặt mật khẩu)")
+    print("  Mở trên điện thoại : trang 'Cài đặt & tài khoản' → thẻ 'Mở trên điện thoại'")
     print("=" * 64, flush=True)
 
     sys.path.insert(0, str(ROOT / "backend"))

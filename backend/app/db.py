@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS lots (
     buy_date TEXT NOT NULL,
     stop_loss REAL,
     take_profit REAL,
-    highest REAL
+    highest REAL,
+    anchor_date TEXT,
+    anchor_close REAL
 );
 CREATE TABLE IF NOT EXISTS equity_history (
     user_id INTEGER NOT NULL DEFAULT 0,
@@ -173,6 +175,10 @@ class Database:
         for table in USER_TABLES:
             if "user_id" not in self._columns(table):
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
+        # mốc giá để nhận biết chia cổ tức bằng cổ phiếu / tách cổ phiếu sau ngày mua
+        for col, typ in (("anchor_date", "TEXT"), ("anchor_close", "REAL")):
+            if col not in self._columns("lots"):
+                self._conn.execute(f"ALTER TABLE lots ADD COLUMN {col} {typ}")
         if "user_id" not in self._columns("equity_history"):
             self._conn.executescript("""
                 ALTER TABLE equity_history RENAME TO equity_history_v1;

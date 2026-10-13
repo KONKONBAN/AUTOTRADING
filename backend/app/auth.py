@@ -69,12 +69,21 @@ def is_local(request: Request) -> bool:
 
 
 def client_ip(request: Request) -> str:
+    """IP thật của người dùng. Chỉ tin header chuyển tiếp khi kết nối đến từ CHÍNH máy này (đường hầm cloudflared
+    hoặc proxy cục bộ); máy khác trong mạng LAN tự gắn header X-Real-IP sẽ không né được giới hạn theo IP."""
+    peer = request.client.host if request.client else "?"
+    try:
+        trusted = peer == "testclient" or ipaddress.ip_address(peer).is_loopback
+    except ValueError:
+        trusted = False
+    if not trusted:
+        return peer
     for h in ("cf-connecting-ip", "x-real-ip"):
         if request.headers.get(h):
             return request.headers[h].strip()
     if request.headers.get("x-forwarded-for"):
         return request.headers["x-forwarded-for"].split(",")[0].strip()
-    return request.client.host if request.client else "?"
+    return peer
 
 
 def needs_login(path: str) -> bool:
@@ -245,16 +254,29 @@ def _record_failure(key: str) -> None:
         _failures.setdefault(key, []).append(time.time())
 
 
+def _reserve_attempt(keys: list[str]) -> float:
+    """Kiểm tra + ghi nhận lượt thử TRONG CÙNG một khóa: nhiều yêu cầu song song không vượt được giới hạn."""
+    now = time.time()
+    with _fail_lock:
+        waits = []
+        for k in keys:
+            recent = [t for t in _failures.get(k, []) if now - t < FAIL_WINDOW]
+            _failures[k] = recent
+            if len(recent) >= MAX_FAILURES:
+                waits.append(int(FAIL_WINDOW - (now - recent[0])))
+        if waits:
+            raise AuthError(f"Sai mật khẩu quá nhiều lần - thử lại sau {max(waits) // 60 + 1} phút.")
+        for k in keys:
+            _failures[k].append(now)  # tính là một lần sai cho tới khi mật khẩu được xác nhận đúng
+    return now
+
+
 def authenticate(username: str, password: str, ip: str) -> dict:
     keys = [f"ip:{ip}", f"user:{(username or '').strip().lower()}"]
-    wait = max(login_blocked(k) for k in keys)
-    if wait:
-        raise AuthError(f"Sai mật khẩu quá nhiều lần - thử lại sau {wait // 60 + 1} phút.")
+    _reserve_attempt(keys)
     row = get_db().query_one("SELECT * FROM users WHERE username=?", ((username or "").strip().lower(),))
     ok = _verify_password(password, row["password_hash"] if row else _DUMMY_HASH)
     if not row or not ok:
-        for k in keys:
-            _record_failure(k)
         raise AuthError("Sai tên đăng nhập hoặc mật khẩu.")
     if row["disabled"]:
         raise AuthError("Tài khoản đã bị khóa - liên hệ quản trị viên.")

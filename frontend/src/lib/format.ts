@@ -38,6 +38,10 @@ export function bn(x: unknown): string {
   return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: Math.abs(x) >= 100 ? 0 : 1 }).format(x);
 }
 
+/** Bước giá theo sàn và vùng giá (HOSE: 10/50/100đ; HNX, UPCoM: 100đ) - khớp vn_rules.tick_size ở máy chủ. */
+export const tickFor = (price: number, exchange: string) =>
+  exchange.toUpperCase() !== "HOSE" ? 100 : price < 10_000 ? 10 : price < 50_000 ? 50 : 100;
+
 export const cls = (...xs: (string | false | null | undefined)[]) => xs.filter(Boolean).join(" ");
 
 export const tone = (x: unknown) => (!isNum(x) || x === 0 ? "ref" : x > 0 ? "up" : "down");

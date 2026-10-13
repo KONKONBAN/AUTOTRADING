@@ -6,7 +6,7 @@ import {
 import { Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../lib/api";
 import { useStatus } from "../lib/status";
-import { bn, cls, num, pct, recTone, tone, vnd } from "../lib/format";
+import { bn, cls, num, pct, recTone, tickFor, tone, vnd } from "../lib/format";
 import { PriceChart, type Overlays } from "../components/Charts";
 import {
   Alert, Badge, Card, ErrorBox, Field, Loading, PartBar, ScoreRing, Seg, SourceBadge, Tabs, TickerLogo, useAsync, useToast,
@@ -27,7 +27,7 @@ function Metric({ label, value, cls: c, hint }: { label: string; value: React.Re
   );
 }
 
-function OrderBox({ ticker, price, plan }: { ticker: string; price: number; plan: any }) {
+function OrderBox({ ticker, price, plan, exchange }: { ticker: string; price: number; plan: any; exchange: string }) {
   const toast = useToast();
   const [side, setSide] = useState<"BUY" | "SELL">("BUY");
   const [qty, setQty] = useState<number>(plan.suggested_quantity || 100);
@@ -42,6 +42,7 @@ function OrderBox({ ticker, price, plan }: { ticker: string; price: number; plan
       });
       // lệnh LO khớp tại giá thị trường (≤ giá mua đặt / ≥ giá bán đặt) → hiển thị giá khớp thực tế
       toast("ok", `Đã khớp lệnh ${side === "BUY" ? "MUA" : "BÁN"} ${vnd(r.quantity)} ${ticker} @ ${vnd(r.price)} (tài khoản giấy)`);
+      window.dispatchEvent(new Event("orders-changed"));
     } catch (e: any) {
       toast("err", e.message);
     } finally {
@@ -49,16 +50,23 @@ function OrderBox({ ticker, price, plan }: { ticker: string; price: number; plan
     }
   };
   const value = qty * px;
+  const tick = tickFor(px || price, exchange);
+  const offTick = Math.abs(px / tick - Math.round(px / tick)) > 1e-6;
+  const problem = qty <= 0 || qty % 100 !== 0 ? "Khối lượng phải là bội số của 100 (lô chẵn)."
+    : !(px > 0) ? "Nhập giá đặt." : offTick ? `Giá phải theo bước giá ${vnd(tick)}đ.`
+    : side === "BUY" && px < price ? `Giá mua thấp hơn giá khớp gần nhất ${vnd(price)} - lệnh LO sẽ chưa khớp.`
+    : side === "SELL" && px > price ? `Giá bán cao hơn giá khớp gần nhất ${vnd(price)} - lệnh LO sẽ chưa khớp.` : null;
   return (
     <div className="col" style={{ gap: 12 }}>
       <Seg value={side} onChange={setSide} items={[{ value: "BUY", label: "Mua" }, { value: "SELL", label: "Bán" }]} />
       <div className="grid g2" style={{ gap: 10 }}>
-        <Field label="Khối lượng (lô 100)"><input className="input mono" type="number" step={100} min={100} value={qty} onChange={(e) => setQty(Number(e.target.value))} /></Field>
-        <Field label="Giá đặt (đ)"><input className="input mono" type="number" step={50} value={px} onChange={(e) => setPx(Number(e.target.value))} /></Field>
+        <Field label="Khối lượng (lô 100)"><input className="input mono" type="number" inputMode="numeric" step={100} min={100} value={qty} onChange={(e) => setQty(Math.max(0, Math.floor(Number(e.target.value) || 0)))} /></Field>
+        <Field label="Giá đặt (đ)"><input className="input mono" type="number" inputMode="decimal" step={tick} value={px} onChange={(e) => setPx(Number(e.target.value) || 0)} /></Field>
       </div>
       <div className="row between small"><span className="muted">Giá trị lệnh</span><b className="mono">{vnd(value)}đ</b></div>
       <div className="row between small"><span className="muted">Phí 0,15%{side === "SELL" ? " + thuế 0,1%" : ""}</span><span className="mono">{vnd(value * (side === "SELL" ? 0.0025 : 0.0015))}đ</span></div>
-      <button className={cls("btn", side === "BUY" ? "buy" : "sell")} disabled={busy || qty <= 0} onClick={submit}>
+      {problem && <div className="small down">{problem}</div>}
+      <button className={cls("btn", side === "BUY" ? "buy" : "sell")} disabled={busy || !!problem} onClick={submit}>
         {side === "BUY" ? "Đặt lệnh MUA" : "Đặt lệnh BÁN"} (giao dịch giấy)
       </button>
       <div className="tiny subtle">Lệnh khớp trên tài khoản giao dịch giấy theo đúng quy định: lô 100, biên độ, bước giá, T+2.</div>
@@ -466,7 +474,7 @@ export default function Stock() {
             <ul className="small muted" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.8 }}>{p.rules.map((x: string, i: number) => <li key={i}>{x}</li>)}</ul>
           </Card>
           <Card title="Đặt lệnh nhanh" icon={<CircleDollarSign size={16} />}>
-            <OrderBox ticker={ticker} price={t.price} plan={p} />
+            <OrderBox ticker={ticker} price={t.price} plan={p} exchange={d.info.exchange} />
           </Card>
         </div>
       )}

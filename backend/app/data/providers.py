@@ -448,7 +448,11 @@ def get_history(ticker: str, days: int = 750) -> pd.DataFrame:
 
     df, source = None, None
     imported = _imported_history(ticker)
-    if imported is not None:
+    # File nhập tay được ưu tiên khi còn MỚI; file cũ (VD nhập để backtest) không được che giá thị trường hiện tại
+    fresh = imported is not None and (
+        settings.data_mode == "demo"
+        or sessions_since(pd.Timestamp(imported["date"].iloc[-1]).date()) <= IMPORTED_FRESH_SESSIONS)
+    if fresh:
         df, source = imported, SOURCE_IMPORTED
     elif settings.data_mode in {"auto", "live"}:
         end = date.today()
@@ -456,8 +460,12 @@ def get_history(ticker: str, days: int = 750) -> pd.DataFrame:
         try:
             df, source, _ = fetch_live(ticker, start, end)
         except DataUnavailable:
-            if settings.data_mode == "live":
+            if imported is not None:
+                df, source = imported, SOURCE_IMPORTED  # nguồn tự động lỗi: file cũ vẫn hơn DEMO
+            elif settings.data_mode == "live":
                 raise
+    elif imported is not None:
+        df, source = imported, SOURCE_IMPORTED
     if df is None:
         df, source = _demo_history(ticker, n=fetch_days), SOURCE_DEMO
 
@@ -472,6 +480,24 @@ def get_history(ticker: str, days: int = 750) -> pd.DataFrame:
                for r in df[["date", "open", "high", "low", "close", "volume"]].to_dict("records")]
     db.cache_set(key, {"source": source, "rows": records}, ttl)
     return _finalize(df.tail(days), source)
+
+
+def now_vn() -> datetime:
+    """Giờ Việt Nam hiện tại (không kèm múi giờ) - máy chủ trên Internet thường chạy giờ UTC."""
+    return pd.Timestamp.now(tz=VN_TZ).tz_localize(None).to_pydatetime()
+
+
+def today_vn() -> date:
+    """Ngày hiện tại theo giờ Việt Nam (máy tính có thể đặt múi giờ khác)."""
+    return now_vn().date()
+
+
+def sessions_since(last: date, today: date | None = None) -> int:
+    """Số ngày làm việc (T2-T6) từ phiên `last` tới hôm nay - đo độ cũ của dữ liệu giá."""
+    return int(np.busday_count(last, today or today_vn()))
+
+
+IMPORTED_FRESH_SESSIONS = 5  # file giá nhập tay cũ hơn mức này → ưu tiên nguồn tự động (nếu có)
 
 
 def is_tradeable_source(source: str | None) -> bool:

@@ -17,6 +17,8 @@ Chế độ:
 from __future__ import annotations
 
 import logging
+import math
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -61,6 +63,15 @@ def load_config() -> AutoTraderConfig:
     return cfg
 
 
+# Giới hạn hợp lệ cho tham số số (chặn NaN/vô cực/giá trị vô lý làm hỏng chu kỳ tự động)
+_LIMITS = {
+    "max_positions": (1, 50), "max_weight": (0.01, 1.0), "risk_per_trade": (0.001, 0.1), "min_score": (0, 100),
+    "min_technical": (0, 100), "stop_atr_multiple": (0.5, 10), "max_stop_pct": (0.01, 0.5),
+    "trailing_stop_pct": (0.01, 0.5), "scale_in_gain": (0, 1), "max_drawdown_halt": (0.01, 1),
+}
+_RUN_TIME = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
 def save_config(data: dict) -> AutoTraderConfig:
     cfg = load_config()
     for k, v in data.items():
@@ -70,12 +81,18 @@ def save_config(data: dict) -> AutoTraderConfig:
         if isinstance(cur, bool):
             v = v if isinstance(v, bool) else str(v).lower() in {"1", "true", "yes", "on"}
         elif isinstance(cur, list):
-            v = list(v)
+            v = [str(x) for x in v] if isinstance(v, list) else []
         else:
             v = type(cur)(v)
+        if k in _LIMITS:
+            lo, hi = _LIMITS[k]
+            if not math.isfinite(float(v)) or not lo <= float(v) <= hi:
+                raise ValueError(f"{k} phải nằm trong khoảng {lo} - {hi}")
         setattr(cfg, k, v)
     if cfg.mode not in {"off", "suggest", "auto_paper"}:
         raise ValueError("mode phải là off | suggest | auto_paper")
+    if not _RUN_TIME.match(cfg.run_time):
+        raise ValueError("run_time phải có dạng HH:MM, ví dụ 14:15")
     get_db().set_user_kv(current_user_id(), "autotrader_config", asdict(cfg))
     return cfg
 
@@ -98,6 +115,23 @@ def _last_price(ticker: str) -> float:
         return 0.0
 
 
+NEUTRAL_EXPOSURE = 0.5
+
+
+def _abnormal_gap(ticker: str) -> float | None:
+    """Mức giảm của phiên gần nhất nếu VƯỢT biên độ sàn (không thể xảy ra khi giao dịch bình thường) → dấu hiệu
+    ngày GDKHQ chia cổ tức bằng cổ phiếu / tách CP trên chuỗi giá chưa điều chỉnh."""
+    try:
+        close = providers.get_history(ticker, days=5)["close"]
+    except Exception:  # noqa: BLE001
+        return None
+    if len(close) < 2 or not close.iloc[-2]:
+        return None
+    change = float(close.iloc[-1] / close.iloc[-2] - 1)
+    band = vn_rules.PRICE_BANDS.get(universe.info(ticker)["exchange"].upper(), 0.07)
+    return change if change < -(band + 0.01) else None
+
+
 def plan_cycle(cfg: AutoTraderConfig | None = None) -> dict:
     """Lập kế hoạch lệnh cho chu kỳ hiện tại (chưa thực thi)."""
     cfg = cfg or load_config()
@@ -105,9 +139,18 @@ def plan_cycle(cfg: AutoTraderConfig | None = None) -> dict:
     acc = broker.account()
     equity, cash = acc["equity"], acc["cash"]
     market = services.market_overview()
-    exposure_target = market["recommended_exposure"] if cfg.use_market_filter else 0.95
+    market_real = providers.is_tradeable_source(market.get("source"))
+    if not cfg.use_market_filter:
+        exposure_target = 0.95
+    elif market_real:
+        exposure_target = market["recommended_exposure"]
+    else:
+        exposure_target = NEUTRAL_EXPOSURE  # VN-Index đang là DEMO: không suy trạng thái thị trường từ dữ liệu giả
     actions: list[dict] = []
-    notes: list[str] = [f"Thị trường: {market['regime']} → tỷ trọng cổ phiếu mục tiêu {vn_pct(exposure_target, 0)}."]
+    notes: list[str] = [f"Thị trường: {market['regime']} → tỷ trọng cổ phiếu mục tiêu {vn_pct(exposure_target, 0)}."
+                        if market_real or not cfg.use_market_filter else
+                        "Chưa có dữ liệu thật của VN-Index → bỏ qua bộ lọc thị trường, tỷ trọng mục tiêu trung tính "
+                        f"{vn_pct(exposure_target, 0)} và không bán vì lý do thị trường chung."]
     fee = vn_rules.DEFAULT_FEE_RATE
     # Đề xuất MUA đang chờ duyệt từ nguồn khác (AI Agent) có thể được duyệt → giữ chỗ ngân sách cho chúng.
     # Đề xuất cũ của chính Auto-Trader sẽ bị thay thế ở chu kỳ này nên không tính.
@@ -123,7 +166,16 @@ def plan_cycle(cfg: AutoTraderConfig | None = None) -> dict:
     held = {p["ticker"]: p for p in acc["positions"]}
     for t, p in held.items():
         a = services.analyze_stock(t, include_chart=False)
+        if not providers.is_tradeable_source(a["data_sources"]["prices"]) or not p.get("price_ok", True):
+            # giá DEMO dự phòng (mất kết nối) không được ghi vào đỉnh giá / dùng để quyết định bán
+            notes.append(f"{t}: chưa có giá thật (nguồn dữ liệu đang lỗi) - giữ nguyên vị thế, không xét mua/bán.")
+            continue
         price = a["technical"]["price"]
+        gap = _abnormal_gap(t)
+        if gap is not None:
+            notes.append(f"{t}: giá giảm {vn_pct(gap)} trong một phiên - vượt biên độ sàn, nhiều khả năng do chia cổ tức "
+                         "bằng cổ phiếu / tách cổ phiếu (giá chưa điều chỉnh). Không tự động cắt lỗ phiên này - hãy kiểm tra.")
+            continue
         broker.update_risk_levels(t, highest=price)
         highest = max(p.get("highest") or price, price)
         stop = p.get("stop_loss") or p["avg_price"] * (1 - cfg.max_stop_pct)
@@ -225,7 +277,7 @@ def run_cycle(cfg: AutoTraderConfig | None = None, force_mode: str | None = None
                                          source="autotrader", reason=act["reason"],
                                          stop_loss=act.get("stop_loss"))
                 executed.append({**act, "result": res})
-            except OrderError as exc:
+            except Exception as exc:  # noqa: BLE001 - một lệnh lỗi (thiếu dữ liệu, sai luật) không dừng cả chu kỳ
                 executed.append({**act, "error": str(exc)})
         elif mode == "suggest":
             cur = db.execute(
@@ -250,6 +302,15 @@ def list_proposals(status: str | None = "pending") -> list[dict]:
 
 def last_run() -> str | None:
     return get_db().get_user_kv(current_user_id(), "autotrader_last_run")
+
+
+def last_attempt() -> str | None:
+    """Lần gần nhất bộ lập lịch BẮT ĐẦU chạy (kể cả khi lỗi) - để lỗi không bị thử lại mỗi phút."""
+    return get_db().get_user_kv(current_user_id(), "autotrader_last_attempt") or last_run()
+
+
+def mark_attempt(when: str) -> None:
+    get_db().set_user_kv(current_user_id(), "autotrader_last_attempt", when)
 
 
 SLIPPAGE = 0.02  # khi duyệt: chấp nhận giá hiện tại xấu hơn giá đề xuất tối đa 2%

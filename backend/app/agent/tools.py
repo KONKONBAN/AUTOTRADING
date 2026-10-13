@@ -120,7 +120,7 @@ def t_backtest(tickers: list[str] | None = None, min_score: float = 60, max_posi
     r = backtest.run_backtest(tickers=tickers, min_score=min_score, max_positions=max_positions,
                               use_market_filter=use_market_filter)
     return {"metrics": r["metrics"], "benchmark": r["benchmark"], "params": r["params"],
-            "data_source": r["data_source"], "last_trades": r["trades"][-10:], "disclaimer": r["disclaimer"]}
+            "data_source": r["data_source"], "skipped_demo": r.get("skipped_demo"), "last_trades": r["trades"][-10:], "disclaimer": r["disclaimer"]}
 
 
 CALCULATORS: dict[str, Callable] = {

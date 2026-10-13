@@ -39,22 +39,36 @@ class CleanJSONResponse(JSONResponse):
 
 
 # ---------------------------------------------------------------- scheduler
+async def run_due_autotrader(now: datetime) -> None:
+    """Chạy chu kỳ Auto-Trader cho các tài khoản đã đến giờ. Mỗi tài khoản độc lập: lỗi của một tài khoản không
+    chặn các tài khoản khác, và chỉ thử một lần mỗi ngày (không lặp lại mỗi phút khi lỗi)."""
+    if now.weekday() >= 5:
+        return
+    users = get_db().query("SELECT id FROM users WHERE disabled=0")
+    for u in users:
+        with as_user(u["id"]):
+            try:
+                cfg = engine.load_config()
+                last = engine.last_attempt() or ""
+                if (cfg.mode != "off" and now.strftime("%H:%M") >= cfg.run_time
+                        and not last.startswith(now.date().isoformat())):
+                    engine.mark_attempt(now.isoformat(timespec="seconds"))
+                    log.info("Auto-Trader: chạy chu kỳ tự động (%s) cho tài khoản #%s", cfg.mode, u["id"])
+                    services.clear_caches()
+                    await asyncio.to_thread(engine.run_cycle, cfg)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Lỗi Auto-Trader của tài khoản #%s", u["id"])
+                try:
+                    get_db().log_event("autotrader_error", f"Chu kỳ Auto-Trader tự động bị lỗi: {exc}")
+                except Exception:  # noqa: BLE001
+                    pass
+
+
 async def autotrader_scheduler() -> None:
-    """Chạy Auto-Trader mỗi ngày làm việc vào giờ cấu hình (giờ máy tính) - cho TỪNG tài khoản đã bật."""
+    """Chạy Auto-Trader mỗi ngày làm việc vào giờ cấu hình (giờ Việt Nam) - cho TỪNG tài khoản đã bật."""
     while True:
         try:
-            now = datetime.now()
-            if now.weekday() < 5:
-                users = get_db().query("SELECT id FROM users WHERE disabled=0")
-                for u in users:
-                    with as_user(u["id"]):
-                        cfg = engine.load_config()
-                        last = engine.last_run() or ""
-                        if (cfg.mode != "off" and now.strftime("%H:%M") >= cfg.run_time
-                                and not last.startswith(date.today().isoformat())):
-                            log.info("Auto-Trader: chạy chu kỳ tự động (%s) cho tài khoản #%s", cfg.mode, u["id"])
-                            services.clear_caches()
-                            await asyncio.to_thread(engine.run_cycle, cfg)
+            await run_due_autotrader(providers.now_vn())
         except Exception:  # noqa: BLE001
             log.exception("Lỗi scheduler Auto-Trader")
         await asyncio.sleep(60)
@@ -370,7 +384,8 @@ def get_universe():
 
 
 @app.post("/api/data/listing/refresh")
-def listing_refresh():
+def listing_refresh(request: Request):
+    _admin(request)
     try:
         n = len(listing.refresh())
     except RuntimeError as exc:
@@ -478,8 +493,11 @@ def financials(ticker: str):
             "manual": fundamentals.list_manual(ticker)}
 
 
+# Giá / BCTC nhập tay và danh sách mã là dữ liệu DÙNG CHUNG cho mọi tài khoản (ghi đè nguồn tự động khi phân tích,
+# định giá, đặt lệnh, Auto-Trader) → chỉ quản trị viên được ghi. Người dùng thường vẫn xem trước file được.
 @app.put("/api/financials/{ticker}/manual")
-def save_financials(ticker: str, body: ManualRows):
+def save_financials(ticker: str, body: ManualRows, request: Request):
+    _admin(request)
     try:
         saved = fundamentals.save_manual(ticker, body.rows)
     except (ValueError, KeyError, TypeError) as exc:
@@ -489,7 +507,8 @@ def save_financials(ticker: str, body: ManualRows):
 
 
 @app.delete("/api/financials/{ticker}/manual")
-def delete_financials(ticker: str, year: int | None = None):
+def delete_financials(ticker: str, request: Request, year: int | None = None):
+    _admin(request)
     fundamentals.delete_manual(ticker, year)
     services.clear_caches()
     return {"ok": True}
@@ -527,7 +546,8 @@ async def extract_financials(files: list[UploadFile] = File(...), ticker: str | 
 
 # ---------------------------------------------------------------- price data import
 @app.post("/api/prices/upload")
-async def upload_prices(file: UploadFile = File(...), ticker: str | None = Form(None)):
+async def upload_prices(request: Request, file: UploadFile = File(...), ticker: str | None = Form(None)):
+    _admin(request)
     try:
         res = excel_import.import_price_file(await file.read(), file.filename or "prices.csv", ticker)
     except ValueError as exc:
@@ -542,7 +562,8 @@ def imported_prices():
 
 
 @app.delete("/api/prices/imported/{ticker}")
-def delete_prices(ticker: str):
+def delete_prices(ticker: str, request: Request):
+    _admin(request)
     excel_import.delete_imported(ticker)
     services.clear_caches()
     return {"ok": True}

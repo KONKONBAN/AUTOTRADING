@@ -83,6 +83,7 @@ function Backtest() {
             { name: "VN-Index", color: "var(--chart-muted)", width: 1, data: res.equity_curve.map((c: any) => ({ time: c.date, value: c.benchmark_equity })) },
           ]} />
           <div className="row small subtle" style={{ gap: 14 }}><span><i className="legend-dot" style={{ background: "var(--chart-1)" }} />Chiến lược</span><span><i className="legend-dot" style={{ background: "var(--chart-muted)" }} />Mua & nắm giữ VN-Index</span><span>Nguồn dữ liệu: {res.data_source}</span></div>
+          {res.skipped_demo?.length > 0 && <Alert kind="warn">Bỏ qua {res.skipped_demo.length} mã chưa có giá thật (nguồn dữ liệu lỗi, đang là DEMO): {res.skipped_demo.join(", ")}.</Alert>}
           <Alert kind="info">{res.disclaimer}</Alert>
           <div className="table-wrap" style={{ maxHeight: 320 }}>
             <table className="tbl">

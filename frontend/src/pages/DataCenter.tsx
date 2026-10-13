@@ -4,11 +4,15 @@ import {
   CandlestickChart, CheckCircle2, Database, Download, FileImage, FileSpreadsheet, Plus, RefreshCw, Save, Trash2, Wifi, WifiOff, XCircle,
 } from "lucide-react";
 import { api, download } from "../lib/api";
+import { useAuth } from "../components/AuthGate";
 import { useStatus } from "../lib/status";
 import { bn, cls, num, pct, recTone, sourceLabel, tone, vnd } from "../lib/format";
 import { Alert, Badge, Card, Empty, Field, FileDrop, Loading, SourceBadge, Tabs, useAsync, useToast } from "../components/ui";
 
 type Tab = "sources" | "prices" | "fin" | "chart";
+
+const SHARED_NOTE = "Giá và BCTC nhập tay là dữ liệu dùng chung cho mọi tài khoản (ghi đè nguồn tự động khi phân tích và đặt lệnh), "
+  + "nên chỉ quản trị viên được lưu. Bạn vẫn xem trước / đọc thử file được; hãy gửi file cho quản trị viên để lưu.";
 
 /* ------------------------------------------------------------------ nguồn tự động */
 function Sources() {
@@ -81,6 +85,7 @@ function Sources() {
 /* ------------------------------------------------------------------ giá */
 function Prices({ ticker }: { ticker: string }) {
   const toast = useToast();
+  const admin = useAuth().user.role === "admin";
   const list = useAsync(() => api.get("/api/prices/imported"), []);
   const [tk, setTk] = useState(ticker);
   const upload = async (files: File[]) => {
@@ -100,7 +105,8 @@ function Prices({ ticker }: { ticker: string }) {
       <Card title="Tải lên lịch sử giá" icon={<CandlestickChart size={16} />} hint="CSV hoặc Excel (.xlsx) - xuất từ Amibroker/MetaStock, CafeF, Vietstock, các bảng giá CTCK…">
         <div className="col" style={{ gap: 12 }}>
           <Field label="Mã cổ phiếu (khi file không có cột mã)"><input className="input" value={tk} onChange={(e) => setTk(e.target.value.toUpperCase())} placeholder="VD: FPT" /></Field>
-          <FileDrop accept=".csv,.txt,.xlsx,.xlsm" onFiles={upload} title="Kéo thả hoặc bấm để chọn file giá" hint="Hỗ trợ: <Ticker>,<DTYYYYMMDD>,<Open>,<High>,<Low>,<Close>,<Volume> hoặc bảng có tiêu đề Ngày / Mở cửa / Cao nhất / Thấp nhất / Đóng cửa / Khối lượng" icon={<FileSpreadsheet size={22} />} />
+          {!admin && <Alert kind="warn">{SHARED_NOTE}</Alert>}
+          {admin && <FileDrop accept=".csv,.txt,.xlsx,.xlsm" onFiles={upload} title="Kéo thả hoặc bấm để chọn file giá" hint="Hỗ trợ: <Ticker>,<DTYYYYMMDD>,<Open>,<High>,<Low>,<Close>,<Volume> hoặc bảng có tiêu đề Ngày / Mở cửa / Cao nhất / Thấp nhất / Đóng cửa / Khối lượng" icon={<FileSpreadsheet size={22} />} />}
           <Alert kind="info">Giá theo nghìn đồng (VD 57.2) sẽ tự quy đổi sang đồng. Dữ liệu nhập được ưu tiên hơn nguồn tự động cho mã tương ứng.</Alert>
         </div>
       </Card>
@@ -111,7 +117,13 @@ function Prices({ ticker }: { ticker: string }) {
               <div key={r.ticker} className="list-item">
                 <Link to={`/stock/${r.ticker}`} className="bold">{r.ticker}</Link>
                 <span className="small muted grow">{vnd(r.rows)} phiên · {r.first} → {r.last}</span>
-                <button className="btn sm icon ghost" onClick={async () => { await api.del(`/api/prices/imported/${r.ticker}`); list.reload(); }}><Trash2 size={14} /></button>
+                {admin && (
+                  <button className="btn sm icon ghost" title={`Xóa dữ liệu giá đã nhập của ${r.ticker}`} aria-label={`Xóa dữ liệu giá ${r.ticker}`}
+                    onClick={async () => {
+                      if (!confirm(`Xóa dữ liệu giá đã nhập của ${r.ticker}? Ứng dụng sẽ quay lại dùng nguồn tự động.`)) return;
+                      try { await api.del(`/api/prices/imported/${r.ticker}`); list.reload(); } catch (e: any) { toast("err", e.message); }
+                    }}><Trash2 size={14} /></button>
+                )}
               </div>
             ))}
           </div>
@@ -172,6 +184,7 @@ function FinGrid({ fields, rows, setRows }: { fields: any[]; rows: Row[]; setRow
 
 function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: string) => void }) {
   const toast = useToast();
+  const admin = useAuth().user.role === "admin";
   const { universe, status } = useStatus();
   const fields = useAsync(() => api.get("/api/financials/fields"), []);
   const fin = useAsync(() => api.get(`/api/financials/${ticker}`), [ticker]);
@@ -252,8 +265,12 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
   };
   const removeManual = async () => {
     if (!confirm(`Xóa toàn bộ số liệu nhập tay của ${ticker}?`)) return;
-    await api.del(`/api/financials/${ticker}/manual`);
-    fin.reload();
+    try {
+      await api.del(`/api/financials/${ticker}/manual`);
+      fin.reload();
+    } catch (e: any) {
+      toast("err", e.message);
+    }
   };
 
   return (
@@ -278,7 +295,7 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
           <div className="grow" />
           <button className="btn" onClick={() => download(`/api/financials/template?ticker=${ticker}`)}><Download size={15} /> Tải file Excel mẫu ({ticker})</button>
           <button className="btn" onClick={editExisting}><FileSpreadsheet size={15} /> Sửa trực tiếp</button>
-          {fin.data?.manual?.length > 0 && <button className="btn ghost" onClick={removeManual}><Trash2 size={15} /> Xóa số liệu nhập tay</button>}
+          {admin && fin.data?.manual?.length > 0 && <button className="btn ghost" onClick={removeManual}><Trash2 size={15} /> Xóa số liệu nhập tay</button>}
         </div>
       </Card>
 
@@ -308,8 +325,9 @@ function Financials({ ticker, setTicker }: { ticker: string; setTicker: (t: stri
             <button className="btn sm" title="Số liệu đang nhỏ hơn thực tế 1000 lần" onClick={() => rescale(1000)}>×1000</button>
             <button className="btn sm" title="Số liệu đang lớn hơn thực tế 1000 lần" onClick={() => rescale(0.001)}>÷1000</button>
             <button className="btn ghost" onClick={() => setDraft(null)}>Hủy</button>
-            <button className="btn primary" onClick={save}><Save size={15} /> Lưu vào hệ thống</button></>}>
+            <button className="btn primary" onClick={save} disabled={!admin} title={admin ? undefined : "Chỉ quản trị viên được lưu dữ liệu dùng chung"}><Save size={15} /> Lưu vào hệ thống</button></>}>
           <div className="col" style={{ gap: 10 }}>
+            {!admin && <Alert kind="warn">{SHARED_NOTE}</Alert>}
             {meta?.warnings?.map((w: string, i: number) => <Alert key={i} kind="warn">{w}</Alert>)}
             {meta?.missing?.length > 0 && <div className="small subtle">Chưa tìm thấy: {meta.missing.map((k: string) => fields.data.find((f: any) => f.key === k)?.label ?? k).join(", ")}</div>}
             <FinGrid fields={fields.data} rows={draft} setRows={setDraft} />

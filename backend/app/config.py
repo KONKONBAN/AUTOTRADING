@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,7 +15,8 @@ def _load_dotenv() -> None:
     env_file = ROOT_DIR / ".env"
     if not env_file.exists():
         return
-    for raw in env_file.read_text(encoding="utf-8").splitlines():
+    # utf-8-sig: file .env lưu bằng Notepad có thể có BOM ở đầu - không được làm hỏng tên biến đầu tiên
+    for raw in env_file.read_text(encoding="utf-8-sig").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -23,6 +25,12 @@ def _load_dotenv() -> None:
 
 
 _load_dotenv()
+
+# Toàn bộ logic thị trường (ngày giao dịch, T+2, giờ chạy Auto-Trader) theo giờ Việt Nam. Máy chủ trên Internet
+# thường chạy giờ UTC → đặt múi giờ tiến trình UTC+7 (Việt Nam không có giờ mùa hè). Windows dùng giờ máy tính.
+if hasattr(time, "tzset") and not os.environ.get("TZ"):
+    os.environ["TZ"] = "ICT-7"
+    time.tzset()
 
 
 def _bool(name: str, default: bool) -> bool:

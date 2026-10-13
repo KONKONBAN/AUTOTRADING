@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from datetime import date
 
 import numpy as np
+import pandas as pd
 
 from ..config import settings
 from ..context import current_user_id
@@ -33,6 +34,8 @@ _ORDER_LOCK = threading.RLock()
 
 
 PRICE_EPS = 0.005  # giá nhập file ×1000 có thể lệch dấu phẩy động (32199.9999…) - không coi là khác giá
+STALE_SESSIONS = 7  # giá cũ hơn số phiên này (nghỉ Tết dài nhất ~5-7 phiên) → không cho khớp lệnh
+CA_TOLERANCE = 0.02  # giá quá khứ bị điều chỉnh giảm > 2% sau ngày mua → có chia cổ tức cổ phiếu / tách CP
 
 
 def quote(ticker: str) -> dict:
@@ -42,10 +45,25 @@ def quote(ticker: str) -> dict:
     if not providers.is_tradeable_source(hist.attrs.get("source")):
         raise OrderError(f"Chưa có giá thật cho {ticker} (đang dùng dữ liệu DEMO) - không thể đặt lệnh. "
                          "Hãy kiểm tra kết nối nguồn dữ liệu hoặc tải file giá lên.")
+    last_day, today = hist.index[-1].date(), providers.today_vn()
+    if providers.sessions_since(last_day, today) > STALE_SESSIONS:
+        raise OrderError(f"Giá {ticker} đã cũ (phiên gần nhất {last_day:%d/%m/%Y}) - không thể khớp lệnh theo giá này. "
+                         "Hãy kiểm tra kết nối nguồn dữ liệu hoặc tải file giá mới hơn.")
     last = round(float(hist["close"].iloc[-1]), 2)
-    reference = round(float(hist["close"].iloc[-2]), 2) if len(hist) > 1 else last
+    # Chưa có nến của hôm nay (cuối tuần, trước giờ mở cửa, nguồn chỉ có giá cuối ngày) → phiên kế tiếp lấy giá
+    # đóng cửa phiên gần nhất làm tham chiếu; đang trong phiên hôm nay → tham chiếu là giá đóng cửa phiên trước.
+    reference = round(float(hist["close"].iloc[-2]), 2) if last_day >= today and len(hist) > 1 else last
     ex = universe.info(ticker)["exchange"]
-    return {"last": last, "reference": reference, "exchange": ex, "limits": vn_rules.price_limits(reference, ex)}
+    return {"last": last, "reference": reference, "exchange": ex, "limits": vn_rules.price_limits(reference, ex),
+            "date": last_day.isoformat()}
+
+
+def _anchor(hist: pd.DataFrame, buy_date: str) -> tuple[str, float] | None:
+    """Phiên liền TRƯỚC ngày mua và giá đóng cửa của nó (không đổi theo biến động trong ngày mua)."""
+    before = hist[hist.index < pd.Timestamp(buy_date)]
+    if before.empty:
+        return None
+    return before.index[-1].strftime("%Y-%m-%d"), float(before["close"].iloc[-1])
 
 
 def normalize_ticker(ticker: str) -> str:
@@ -131,8 +149,58 @@ class PaperBroker(BrokerBase):
     def _set_cash(self, value: float) -> None:
         self._set_kv("paper_cash", float(value))
 
+    def _market(self, ticker: str) -> tuple[float | None, pd.DataFrame | None]:
+        """Giá thị trường từ nguồn giao dịch được (không bao giờ dùng giá DEMO dự phòng để định giá tài khoản)."""
+        try:
+            hist = providers.get_history(ticker, days=providers.CACHE_DAYS)
+        except Exception:  # noqa: BLE001
+            return None, None
+        if not providers.is_tradeable_source(hist.attrs.get("source")) or hist.empty:
+            return None, None
+        return float(hist["close"].iloc[-1]), hist
+
+    def _adjust_corporate_actions(self, ticker: str, lots: list[dict], hist: pd.DataFrame) -> None:
+        """Chia cổ tức bằng cổ phiếu / thưởng / tách CP: chuỗi giá điều chỉnh làm giá quá khứ giảm theo hệ số k.
+        Tài khoản thật nhận thêm cổ phiếu → nhân khối lượng 1/k, giá vốn và các mức cắt lỗ/đỉnh × k (giữ nguyên
+        tổng vốn), để không báo lỗ ảo và không kích hoạt cắt lỗ / trailing stop sai vào ngày GDKHQ."""
+        closes = hist["close"]
+        for lot in lots:
+            if lot.get("anchor_date") is None or not lot.get("anchor_close"):
+                anchor = _anchor(hist, lot["buy_date"])
+                if anchor:
+                    self.db.execute("UPDATE lots SET anchor_date=?, anchor_close=? WHERE id=?", (*anchor, lot["id"]))
+                    lot["anchor_date"], lot["anchor_close"] = anchor
+                continue
+            ts = pd.Timestamp(lot["anchor_date"])
+            if ts not in closes.index:
+                continue
+            now_close = float(closes.loc[ts])
+            factor = now_close / float(lot["anchor_close"])
+            if factor >= 1 - CA_TOLERANCE:  # chỉ xử lý điều chỉnh GIẢM (tăng thường do đổi nguồn chưa điều chỉnh)
+                continue
+            new_qty = int(lot["quantity"] / factor + 1e-6)  # cổ phiếu lẻ phát sinh bị làm tròn xuống như thực tế
+            if new_qty <= lot["quantity"]:
+                continue
+            scaled = {k: (lot[k] * factor if lot.get(k) else lot.get(k)) for k in ("highest", "stop_loss", "take_profit")}
+            price = lot["quantity"] * lot["price"] / new_qty
+            self.db.execute(
+                "UPDATE lots SET quantity=?, price=?, highest=?, stop_loss=?, take_profit=?, anchor_close=? WHERE id=?",
+                (new_qty, price, scaled["highest"], scaled["stop_loss"], scaled["take_profit"], now_close, lot["id"]))
+            self.db.log_event("corporate_action",
+                              f"{ticker}: giá lịch sử được điều chỉnh (hệ số {factor:.4f}) - có thể do chia cổ tức bằng "
+                              f"cổ phiếu/tách CP. Lô mua {lot['buy_date']}: {lot['quantity']} → {new_qty} CP, "
+                              f"giá vốn {vn_num(lot['price'])} → {vn_num(price)}.")
+            lot.update(quantity=new_qty, price=price, anchor_close=now_close, **scaled)
+
     def positions(self, prices: dict[str, float] | None = None) -> list[dict]:
-        lots = self.db.query("SELECT * FROM lots WHERE user_id=? ORDER BY ticker, buy_date", (self.uid,))
+        with _ORDER_LOCK:
+            lots = self.db.query("SELECT * FROM lots WHERE user_id=? ORDER BY ticker, buy_date", (self.uid,))
+            market: dict[str, float | None] = {}
+            for t in sorted({lot["ticker"] for lot in lots}):
+                price, hist = self._market(t)
+                market[t] = price
+                if hist is not None:
+                    self._adjust_corporate_actions(t, [lot for lot in lots if lot["ticker"] == t], hist)
         today = date.today()
         grouped: dict[str, dict] = {}
         for lot in lots:
@@ -148,15 +216,13 @@ class PaperBroker(BrokerBase):
             g["highest"] = max(filter(None, [g["highest"], lot["highest"]]), default=None)
         out = []
         for g in grouped.values():
-            price = (prices or {}).get(g["ticker"])
-            if price is None:
-                try:
-                    price = providers.latest_price(g["ticker"])
-                except Exception:  # noqa: BLE001
-                    price = g["cost"] / g["quantity"]
+            price = (prices or {}).get(g["ticker"]) or market.get(g["ticker"])
+            price_ok = price is not None
             avg = g["cost"] / g["quantity"]
+            if price is None:
+                price = avg  # chưa có giá thật: tạm tính theo giá vốn (không dùng DEMO)
             value = price * g["quantity"]
-            out.append({**g, "avg_price": avg, "market_price": price, "market_value": value,
+            out.append({**g, "avg_price": avg, "market_price": price, "market_value": value, "price_ok": price_ok,
                         "unrealized_pnl": value - g["cost"], "unrealized_pct": price / avg - 1,
                         "sector": universe.info(g["ticker"])["sector"]})
         return out
@@ -181,6 +247,8 @@ class PaperBroker(BrokerBase):
 
     def snapshot_equity(self) -> None:
         acc = self.account()
+        if any(not p["price_ok"] for p in acc["positions"]):
+            return  # thiếu giá thật của một mã → không ghi NAV sai vào lịch sử (đỉnh NAV dùng cho kill-switch)
         self.db.execute("INSERT OR REPLACE INTO equity_history(user_id, date, equity, cash) VALUES(?,?,?,?)",
                         (self.uid, date.today().isoformat(), acc["equity"], acc["cash"]))
 
@@ -225,7 +293,8 @@ class PaperBroker(BrokerBase):
         last_close, reference, ex = q["last"], q["reference"], q["exchange"]
         quantity = int(quantity)
         if price is not None:
-            limit = vn_rules.round_to_tick(float(price), ex)
+            # giá lệch bước giá: làm tròn theo hướng có lợi cho người đặt (mua xuống, bán lên) - không vượt giới hạn
+            limit = vn_rules.round_to_tick(float(price), ex, "down" if side == "BUY" else "up")
             self._validate(ticker, side, quantity, limit, reference)
             if side == "BUY" and limit < last_close - PRICE_EPS:
                 raise OrderError(f"Giá mua {vn_num(limit)} thấp hơn giá thị trường {vn_num(last_close)} - lệnh LO "

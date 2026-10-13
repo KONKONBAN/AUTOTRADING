@@ -27,14 +27,27 @@ def run_backtest(tickers: list[str] | None = None, initial_cash: float = 500_000
                  max_weight: float = 0.20, risk_per_trade: float = 0.015,
                  trailing_stop_pct: float = 0.10, max_stop_pct: float = 0.07,
                  use_market_filter: bool = True, fee_rate: float = vn_rules.DEFAULT_FEE_RATE) -> dict:
-    tickers = [t.upper() for t in (tickers or [t for t in universe.VN30 if t in universe.UNIVERSE])]
-    frames, scores = {}, {}
-    for t in tickers:
+    requested = list(dict.fromkeys(t.strip().upper() for t in (tickers or [t for t in universe.VN30 if t in universe.UNIVERSE])
+                                   if t.strip()))
+    unknown = [t for t in requested if not universe.is_listed(t) or providers.is_index(t)]
+    if unknown:
+        raise ValueError(f"Mã không hợp lệ (không niêm yết / không có dữ liệu): {', '.join(unknown)}")
+    mkt = providers.get_history("VNINDEX", days=days)
+    if not providers.is_tradeable_source(mkt.attrs.get("source")):
+        raise ValueError("Chưa có dữ liệu thật của VN-Index (đang dùng DEMO) - không backtest trên dữ liệu mô phỏng.")
+    frames, scores, sources, skipped = {}, {}, {}, []
+    for t in requested:
         df = providers.get_history(t, days=days)
+        if not providers.is_tradeable_source(df.attrs.get("source")):
+            skipped.append(t)  # giá DEMO dự phòng: kết quả trên chuỗi ngẫu nhiên vô nghĩa với đầu tư thật
+            continue
+        sources[t] = df.attrs.get("source")
         f = technical.compute_frame(df)
         frames[t] = f
         scores[t] = technical.vector_score(f)
-    mkt = providers.get_history("VNINDEX", days=days)
+    tickers = list(frames)
+    if not tickers:
+        raise ValueError("Không mã nào có dữ liệu giá thật để backtest - hãy kiểm tra kết nối nguồn dữ liệu.")
     tr = market_timing.rolling_trend(mkt["close"], 120)
     mkt_ok = (tr["b"] > 0) & (mkt["close"] > mkt["close"].rolling(50).mean())
     dates = sorted(set().union(*[set(f.index) for f in frames.values()]))
@@ -127,7 +140,8 @@ def run_backtest(tickers: list[str] | None = None, initial_cash: float = 500_000
                    "max_positions": max_positions, "max_weight": max_weight, "risk_per_trade": risk_per_trade,
                    "trailing_stop_pct": trailing_stop_pct, "max_stop_pct": max_stop_pct,
                    "use_market_filter": use_market_filter},
-        "data_source": providers.get_history(tickers[0], days=days).attrs.get("source"),
+        "data_source": ", ".join(sorted(set(sources.values()) | {str(mkt.attrs.get("source"))})),
+        "sources": {**sources, "VNINDEX": mkt.attrs.get("source")}, "skipped_demo": skipped,
         "metrics": {**{k: m.get(k) for k in ("total_return", "cagr", "volatility", "sharpe", "sortino",
                                               "max_drawdown", "beta", "jensen_alpha")},
                     "final_equity": float(eq.iloc[-1]), "n_trades": len(trades),

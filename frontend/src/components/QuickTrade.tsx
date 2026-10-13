@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowRight, X } from "lucide-react";
 import { api } from "../lib/api";
 import { useStatus } from "../lib/status";
-import { cls, money, pct, vnd } from "../lib/format";
+import { cls, money, pct, tickFor, vnd } from "../lib/format";
 import { Alert, Field, Seg, Spinner, TickerLogo, useToast } from "./ui";
 
 type Quote = {
@@ -17,9 +17,6 @@ export const useQuickTrade = () => useContext(Ctx);
 
 const FEE = 0.0015;
 const SELL_TAX = 0.001;
-/** Bước giá theo sàn và vùng giá (HOSE: 10/50/100đ; HNX, UPCoM: 100đ). */
-const tickFor = (price: number, exchange: string) =>
-  exchange !== "HOSE" ? 100 : price < 10_000 ? 10 : price < 50_000 ? 50 : 100;
 
 // Màu giá theo quy ước bảng giá: trần tím, sàn xanh lơ, tham chiếu vàng, tăng xanh, giảm đỏ.
 function priceTone(p: number, q: Quote): string {
@@ -76,6 +73,8 @@ function Sheet({ initial, side: side0, onClose }: { initial: string; side: "BUY"
     : qty <= 0 || qty % 100 !== 0 ? "Khối lượng phải là bội số của 100 (lô chẵn)."
     : outOfBand ? `Giá phải nằm trong biên độ ${vnd(q.limits.floor)} – ${vnd(q.limits.ceiling)}.`
     : offTick ? `Giá phải theo bước giá ${vnd(tick)}đ.`
+    : side === "BUY" && px < q.last ? `Giá mua thấp hơn giá khớp gần nhất ${vnd(q.last)} - lệnh LO sẽ chưa khớp (tài khoản giấy không giữ lệnh chờ).`
+    : side === "SELL" && px > q.last ? `Giá bán cao hơn giá khớp gần nhất ${vnd(q.last)} - lệnh LO sẽ chưa khớp (tài khoản giấy không giữ lệnh chờ).`
     : side === "BUY" && value * (1 + FEE) > q.cash ? "Không đủ tiền mặt khả dụng."
     : side === "SELL" && qty > q.sellable ? `Chỉ bán được ${vnd(q.sellable)} CP (cổ phiếu về tài khoản sau T+2).`
     : null;
@@ -137,10 +136,10 @@ function Sheet({ initial, side: side0, onClose }: { initial: string; side: "BUY"
             <Seg value={side} onChange={setSide} items={[{ value: "BUY", label: "Mua" }, { value: "SELL", label: "Bán" }]} />
             <div className="grid g2" style={{ gap: 10 }}>
               <Field label="Khối lượng (CP)" help={side === "BUY" ? `Mua tối đa ≈ ${vnd(maxBuy)} CP` : `Có thể bán: ${vnd(q.sellable)} / đang giữ ${vnd(q.held)}`}>
-                <input className="input num" type="number" inputMode="numeric" step={100} min={100} value={qty} onChange={(e) => setQty(Number(e.target.value))} />
+                <input className="input num" type="number" inputMode="numeric" step={100} min={100} value={qty} onChange={(e) => setQty(Math.max(0, Math.floor(Number(e.target.value) || 0)))} />
               </Field>
               <Field label="Giá đặt (đ)" help={`Bước giá ${vnd(tick)}đ`}>
-                <input className="input num" type="number" inputMode="decimal" step={tick} value={px} onChange={(e) => setPx(Number(e.target.value))} />
+                <input className="input num" type="number" inputMode="decimal" step={tick} value={px} onChange={(e) => setPx(Number(e.target.value) || 0)} />
               </Field>
             </div>
             <div className="quote-sum">

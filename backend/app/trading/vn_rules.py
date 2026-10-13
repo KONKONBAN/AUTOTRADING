@@ -32,10 +32,19 @@ def tick_size(price: float, exchange: str = "HOSE") -> float:
     return 100.0
 
 
+_EPS = 1e-9  # 28.000 × 1,15 = 32.199,999… trong dấu phẩy động: không được làm tròn xuống thành 32.100
+
+
 def round_to_tick(price: float, exchange: str = "HOSE", mode: str = "nearest") -> float:
     step = tick_size(price, exchange)
-    fn = {"nearest": round, "down": math.floor, "up": math.ceil}[mode]
-    return float(fn(price / step) * step)
+    q = price / step
+    n = {"nearest": math.floor(q + 0.5), "down": math.floor(q + _EPS), "up": math.ceil(q - _EPS)}[mode]
+    return float(n * step)
+
+
+def on_tick(price: float, exchange: str = "HOSE") -> bool:
+    q = price / tick_size(price, exchange)
+    return abs(q - round(q)) < 1e-6
 
 
 @dataclass

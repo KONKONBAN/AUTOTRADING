@@ -366,5 +366,6 @@ def get_financials(ticker: str) -> dict:
         result["rows"] = [by_year[y] for y in sorted(by_year)][-8:]
         all_manual = all(r["year"] in result["manual_years"] for r in result["rows"])
         result["source"] = "manual" if all_manual else f"manual+{result['source']}"
-    db.cache_set(key, result, 600 if result["source"] == "none" else 3600 if result["source"] == "demo" else 6 * 3600)
+    # BCTC năm hiếm khi đổi trong ngày → giữ 24 giờ (lần tải đầu cần ~16 yêu cầu/mã); lỗi thì thử lại sau 10 phút
+    db.cache_set(key, result, 600 if result["source"] == "none" else 3600 if result["source"] == "demo" else 24 * 3600)
     return result

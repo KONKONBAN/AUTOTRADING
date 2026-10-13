@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
 import time
 from datetime import date, datetime, timedelta
 from functools import lru_cache
@@ -61,18 +62,26 @@ def _dates_from_epoch(values) -> pd.Series:
 
 
 def _dates_from_text(values) -> pd.Series:
-    """Chuỗi ngày/giờ đa định dạng: ISO (có/không múi giờ), dd/mm/yyyy, dd-mm-yyyy."""
-    out = []
-    for v in values:
-        s = str(v).strip()
-        if re.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{4}", s):
-            ts = pd.to_datetime(s, dayfirst=True)
-        else:
-            ts = pd.to_datetime(s)
-        if ts.tzinfo is not None:
-            ts = ts.tz_convert(VN_TZ).tz_localize(None)
-        out.append(ts.normalize())
-    return pd.Series(out)
+    """Chuỗi ngày/giờ đa định dạng: ISO (có/không múi giờ), dd/mm/yyyy, dd-mm-yyyy.
+
+    Xử lý theo MẢNG (một lần cho cả chuỗi giá): phân tích từng dòng một tốn ~1 giây cho mỗi mã."""
+    s = pd.Series([str(v).strip() for v in values], dtype=object)
+    out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    if s.empty:
+        return out
+    dmy = s.str.extract(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})")
+    is_dmy = dmy[0].notna()
+    if is_dmy.any():
+        iso = dmy[2][is_dmy] + "-" + dmy[1][is_dmy].str.zfill(2) + "-" + dmy[0][is_dmy].str.zfill(2)
+        out[is_dmy] = pd.to_datetime(iso, format="%Y-%m-%d").to_numpy("datetime64[ns]")
+    has_tz = ~is_dmy & s.str.contains(r"(?:Z|[+-]\d{2}:?\d{2})$", regex=True)
+    if has_tz.any():
+        ts = pd.to_datetime(s[has_tz], utc=True, format="ISO8601").dt.tz_convert(VN_TZ).dt.tz_localize(None)
+        out[has_tz] = ts.to_numpy("datetime64[ns]")
+    plain = ~is_dmy & ~has_tz
+    if plain.any():
+        out[plain] = pd.to_datetime(s[plain], format="ISO8601").to_numpy("datetime64[ns]")
+    return out.dt.normalize().reset_index(drop=True)
 
 
 def _frame(dates: pd.Series, o, h, l, c, v, ticker: str, unit: float) -> pd.DataFrame:  # noqa: E741
@@ -431,6 +440,23 @@ def _finalize(df: pd.DataFrame, source: str) -> pd.DataFrame:
 
 
 CACHE_DAYS = 1500  # luôn lấy & cache một chuỗi dài cho mỗi mã, các cửa sổ ngắn hơn cắt đuôi từ đó
+# Bộ nhớ đệm trong RAM: {khóa: (hết hạn, DataFrame)} - hợp lệ khi khớp đúng thời điểm hết hạn của bản ghi trong CSDL,
+# nên mọi thao tác xóa cache trong CSDL (làm mới dữ liệu, nhập file giá…) tự động vô hiệu hóa bản trong RAM.
+_frames: dict[str, tuple[float, pd.DataFrame]] = {}
+_frames_lock = threading.Lock()
+
+
+def _out(full: pd.DataFrame, days: int) -> pd.DataFrame:
+    df = full.tail(days).copy()
+    df.attrs = dict(full.attrs)
+    return df
+
+
+def _remember(key: str, expires: float, full: pd.DataFrame) -> None:
+    with _frames_lock:
+        if len(_frames) > 800:
+            _frames.clear()
+        _frames[key] = (expires, full)
 DEMO_FALLBACK_TTL = 60  # DEMO dự phòng (khi nguồn thật lỗi) chỉ cache ngắn để nhanh chóng thử lại nguồn thật
 
 
@@ -440,11 +466,20 @@ def get_history(ticker: str, days: int = 750) -> pd.DataFrame:
     db = get_db()
     fetch_days = max(days, CACHE_DAYS)
     key = f"hist:{ticker}:{fetch_days}:{settings.data_mode}"
-    cached = db.cache_get(key)
-    if cached:
-        df = pd.DataFrame(cached["rows"])
-        df["date"] = pd.to_datetime(df["date"])
-        return _finalize(df.tail(days), cached["source"])
+    expires = db.cache_expiry(key)
+    if expires:
+        with _frames_lock:
+            hit = _frames.get(key)
+        if hit and hit[0] == expires:
+            return _out(hit[1], days)
+        entry = db.cache_entry(key)
+        if entry:
+            cached, expires = entry
+            df = pd.DataFrame(cached["rows"])
+            df["date"] = pd.to_datetime(df["date"])
+            full = _finalize(df, cached["source"])
+            _remember(key, expires, full)
+            return _out(full, days)
 
     df, source = None, None
     imported = _imported_history(ticker)
@@ -478,8 +513,10 @@ def get_history(ticker: str, days: int = 750) -> pd.DataFrame:
         ttl = 3600 if settings.data_mode == "demo" else DEMO_FALLBACK_TTL
     records = [{**r, "date": pd.Timestamp(r["date"]).strftime("%Y-%m-%d")}
                for r in df[["date", "open", "high", "low", "close", "volume"]].to_dict("records")]
-    db.cache_set(key, {"source": source, "rows": records}, ttl)
-    return _finalize(df.tail(days), source)
+    expires = db.cache_set(key, {"source": source, "rows": records}, ttl)
+    full = _finalize(df, source)
+    _remember(key, expires, full)
+    return _out(full, days)
 
 
 def now_vn() -> datetime:

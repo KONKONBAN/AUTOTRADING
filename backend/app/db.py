@@ -250,12 +250,26 @@ class Database:
             return None
         return json.loads(row["value"])
 
-    def cache_set(self, key: str, value: Any, ttl: float) -> None:
+    def cache_entry(self, key: str) -> tuple[Any, float] | None:
+        """(giá trị, thời điểm hết hạn) - None nếu không có / đã hết hạn."""
+        row = self.query_one("SELECT value, expires_at FROM cache WHERE key = ?", (key,))
+        if not row or row["expires_at"] < time.time():
+            return None
+        return json.loads(row["value"]), row["expires_at"]
+
+    def cache_expiry(self, key: str) -> float | None:
+        """Chỉ đọc thời điểm hết hạn (rẻ) - dùng để kiểm tra bộ nhớ đệm trong RAM còn hợp lệ."""
+        row = self.query_one("SELECT expires_at FROM cache WHERE key = ?", (key,))
+        return row["expires_at"] if row and row["expires_at"] >= time.time() else None
+
+    def cache_set(self, key: str, value: Any, ttl: float) -> float:
+        expires = time.time() + ttl
         self.execute(
             "INSERT INTO cache(key, value, expires_at) VALUES(?,?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires_at=excluded.expires_at",
-            (key, json.dumps(value, ensure_ascii=False), time.time() + ttl),
+            (key, json.dumps(value, ensure_ascii=False), expires),
         )
+        return expires
 
     # ---- events / audit log ---------------------------------------------
     def log_event(self, level: str, message: str, data: Any = None, user_id: int | None = None) -> None:

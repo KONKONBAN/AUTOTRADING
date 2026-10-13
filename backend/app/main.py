@@ -74,13 +74,26 @@ async def autotrader_scheduler() -> None:
         await asyncio.sleep(60)
 
 
+async def warm_up() -> None:
+    """Tải trước dữ liệu thị trường + chấm điểm danh mục theo dõi ngay khi khởi động, để trang Tổng quan / Bộ lọc
+    mở nhanh ở lần đầu (lần đầu cần tải giá + BCTC của ~44 mã)."""
+    await asyncio.sleep(3)
+    for fn in (services.market_overview, services.market_indices, services.screen):
+        try:
+            await asyncio.to_thread(fn)
+        except Exception:  # noqa: BLE001 - mất mạng: trang sẽ tự tải lại khi người dùng mở
+            log.info("Làm nóng dữ liệu (%s) chưa thành công", fn.__name__)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     get_db()
     task = asyncio.create_task(autotrader_scheduler()) if settings.autotrader_scheduler else None
+    warm = asyncio.create_task(warm_up()) if settings.autotrader_scheduler else None
     yield
-    if task:
-        task.cancel()
+    for t in (task, warm):
+        if t:
+            t.cancel()
     remote.stop()
 
 

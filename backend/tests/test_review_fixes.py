@@ -395,3 +395,42 @@ def test_live_mode_without_financials_never_uses_demo(monkeypatch):
     assert abs(sum(comp["weights"].values()) - 1) < 1e-6
     assert any("Chưa có báo cáo tài chính" in c for c in a["summary"]["cons"])
     services.clear_caches()
+
+
+# ------------------------------------------------------------------ file giá thật
+def test_investing_com_english_export():
+    csv = ('"Date","Price","Open","High","Low","Vol.","Change %"\n'
+           '"10/09/2026","135,500","134,000","136,000","133,500","2.34M","1.12%"\n'
+           '"10/08/2026","134,000","133,000","134,500","132,000","850.50K","-0.37%"\n'
+           '"09/30/2026","134,500","134,000","135,000","133,000","1.10M","0.00%"\n').encode()
+    rows = {r[1]: r for r in excel_import.parse_price_file(csv, "FPT Historical Data.csv", "FPT")}
+    assert "2026-10-09" in rows and "2026-09-10" not in rows        # tháng/ngày/năm, không đọc nhầm
+    r = rows["2026-10-09"]
+    assert r[5] == 135_500 and r[3] == 136_000 and r[6] == pytest.approx(2_340_000)
+    assert rows["2026-10-08"][6] == pytest.approx(850_500)
+
+
+def test_investing_com_vietnamese_export():
+    csv = ('"Ngày","Lần cuối","Mở","Cao","Thấp","KL","% Thay đổi"\n'
+           '"09/10/2026","27.250","27.000","27.400","26.900","12,34M","0,93%"\n'
+           '"08/10/2026","27.000","26.800","27.100","26.700","9,87M","0,37%"\n').encode()
+    rows = {r[1]: r for r in excel_import.parse_price_file(csv, "HPG.csv", "HPG")}
+    assert rows["2026-10-09"][5] == 27_250 and rows["2026-10-09"][6] == pytest.approx(12_340_000)
+
+
+def test_cafef_export_uses_adjusted_prices_consistently():
+    csv = ("Ngày,Giá điều chỉnh,Giá đóng cửa,Thay đổi,Khối lượng khớp lệnh,Giá trị khớp lệnh,KL thỏa thuận,"
+           "GT thỏa thuận,Giá mở cửa,Giá cao nhất,Giá thấp nhất\n"
+           "09/10/2026,27.25,27.25,0.25(0.93 %),12340000,336000000000,0,0,27,27.4,26.9\n"
+           "08/05/2026,20,25,0(0 %),1000,1,0,0,24.5,25.5,24\n").encode()
+    rows = {r[1]: r for r in excel_import.parse_price_file(csv, "HPG.csv", "HPG")}
+    old = rows["2026-05-08"]                 # trước khi chia cổ tức: giá gốc 25, điều chỉnh 20 (hệ số 0,8)
+    assert old[5] == 20_000 and old[2] == pytest.approx(19_600) and old[3] == pytest.approx(20_400)
+    assert old[4] <= old[5] <= old[3]       # nến hợp lệ: thấp ≤ đóng ≤ cao
+
+
+def test_metastock_thousand_vnd_and_penny_stock_in_vnd():
+    ami = b"<Ticker>,<DTYYYYMMDD>,<Open>,<High>,<Low>,<Close>,<Volume>\nFPT,20261009,134,136,133.5,135.5,100\nFPT,20261008,133,134.5,132,134,100\n"
+    assert excel_import.parse_price_file(ami, "a.csv")[0][5] == 135_500
+    penny = "Ngày,Giá đóng cửa,Khối lượng\n09/10/2026,800,1000\n08/10/2026,900,1000\n".encode()
+    assert excel_import.parse_price_file(penny, "p.csv", "ABC")[0][5] == 800  # VND, không nhân 1000

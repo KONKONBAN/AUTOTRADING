@@ -515,27 +515,57 @@ PRICE_HEADERS = {
     "open": ["open", "gia mo cua", "mo cua"],
     "high": ["high", "gia cao nhat", "cao nhat"],
     "low": ["low", "gia thap nhat", "thap nhat"],
-    "close": ["close", "gia dong cua", "dong cua", "gia dieu chinh", "adj close", "gia"],
-    "volume": ["volume", "vol", "khoi luong khop lenh", "khoi luong", "kl khop lenh", "tong khoi luong"],
+    "adj_close": ["gia dieu chinh", "adj close", "adjusted close", "gia dc"],
+    "close": ["close", "gia dong cua", "dong cua", "price", "lan cuoi", "gia"],
+    "volume": ["volume", "vol", "khoi luong khop lenh", "khoi luong", "kl khop lenh", "tong khoi luong", "kl"],
 }
+_SUFFIX = {"k": 1e3, "m": 1e6, "b": 1e9}
 
 
-def _parse_date(v) -> str | None:
+def _parse_date(v, month_first: bool = False) -> str | None:
     if isinstance(v, (datetime, date)):
         return v.strftime("%Y-%m-%d")
     s = str(v or "").strip()
     if re.fullmatch(r"\d{8}", s):
         return datetime.strptime(s, "%Y%m%d").strftime("%Y-%m-%d")
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y", "%Y/%m/%d", "%d.%m.%Y"):
+    fmts = ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%d-%m-%Y") if month_first else \
+        ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y", "%Y/%m/%d", "%d.%m.%Y")
+    for fmt in (*fmts, "%Y/%m/%d", "%d.%m.%Y", "%b %d, %Y", "%d %b %Y"):
         try:
-            return datetime.strptime(s[:10], fmt).strftime("%Y-%m-%d")
+            return datetime.strptime(s[:12].strip(), fmt).strftime("%Y-%m-%d")
         except ValueError:
             continue
     return None
 
 
+def _month_first(values: list, header_row: list) -> bool:
+    """Ngày dạng a/b/yyyy: tháng trước (investing.com bản tiếng Anh) hay ngày trước (Việt Nam)?
+    Dựa vào bằng chứng trong file (số > 12), nếu không phân biệt được thì theo kiểu tiêu đề."""
+    first_gt12 = second_gt12 = False
+    for v in values:
+        m = re.match(r"^\s*(\d{1,2})[/-](\d{1,2})[/-]\d{4}", str(v or ""))
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            first_gt12 |= a > 12
+            second_gt12 |= b > 12
+    if first_gt12 != second_gt12:
+        return second_gt12
+    heads = {norm(str(c)) for c in header_row if c is not None}
+    return {"date", "price"} <= heads or "change %" in {str(c).strip().lower() for c in header_row if c}
+
+
+def _vol(v, conv) -> float:
+    """Khối lượng: 1.234.567 | 12,34M | 850.5K (investing.com)."""
+    if isinstance(v, str):
+        t = v.strip().replace(" ", "")
+        if t and t[-1].lower() in _SUFFIX:
+            base = _num(t[:-1], conv)
+            return (base or 0) * _SUFFIX[t[-1].lower()]
+    return _num(v, conv) or 0
+
+
 def parse_price_file(data: bytes, filename: str, default_ticker: str | None = None) -> list[tuple]:
-    rows_out = []
+    rows_out: list[tuple] = []
     for _, grid, conv in _grids(data, filename):
         header_idx, colmap = None, {}
         for i, row in enumerate(grid[:15]):
@@ -546,31 +576,50 @@ def parse_price_file(data: bytes, filename: str, default_ticker: str | None = No
                     if field not in cm and any(n == nm or (len(nm) > 4 and n.startswith(nm)) for nm in names):
                         cm[field] = j
                         break
-            if {"date", "close"} <= set(cm):
+            if "date" in cm and ("close" in cm or "adj_close" in cm):
                 header_idx, colmap = i, cm
                 break
         if header_idx is None:
-            # không có tiêu đề: thử định dạng Amibroker
+            # không có tiêu đề: thử định dạng Amibroker / MetaStock (cophieu68)
             colmap = {"ticker": 0, "date": 1, "open": 2, "high": 3, "low": 4, "close": 5, "volume": 6}
             header_idx = -1
-        for r in grid[header_idx + 1:]:
+        body = grid[header_idx + 1:]
+        month_first = _month_first([r[colmap["date"]] for r in body if colmap["date"] < len(r)],
+                                   grid[header_idx] if header_idx >= 0 else [])
+        parsed: list[list] = []
+        for r in body:
             try:
                 tk = (str(r[colmap["ticker"]]).strip().upper() if "ticker" in colmap and colmap["ticker"] < len(r)
                       else (default_ticker or "").upper())
-                d = _parse_date(r[colmap["date"]])
-                c = _num(r[colmap["close"]], conv)
-                o = _num(r[colmap["open"]], conv) if "open" in colmap else c
-                h = _num(r[colmap["high"]], conv) if "high" in colmap else max(o or c, c)
-                lo = _num(r[colmap["low"]], conv) if "low" in colmap else min(o or c, c)
-                v = _num(r[colmap["volume"]], conv) if "volume" in colmap and colmap["volume"] < len(r) else 0
-            except (IndexError, TypeError, ValueError):
+                d = _parse_date(r[colmap["date"]], month_first)
+                raw = _num(r[colmap["close"]], conv) if "close" in colmap else None
+                adj = _num(r[colmap["adj_close"]], conv) if "adj_close" in colmap else None
+                c = adj if adj is not None else raw
+                # file có cả giá điều chỉnh & giá gốc (CafeF): quy O/H/L về cùng hệ điều chỉnh
+                f = adj / raw if (adj is not None and raw) else 1.0
+                o = _num(r[colmap["open"]], conv) if "open" in colmap else None
+                h = _num(r[colmap["high"]], conv) if "high" in colmap else None
+                lo = _num(r[colmap["low"]], conv) if "low" in colmap else None
+                o, h, lo = (x * f if x is not None else None for x in (o, h, lo))
+                v = _vol(r[colmap["volume"]], conv) if "volume" in colmap and colmap["volume"] < len(r) else 0
+            except (IndexError, TypeError, ValueError, ZeroDivisionError):
                 continue
             if not tk or not d or c is None:
                 continue
-            o, h, lo = o or c, h or c, lo or c
-            if tk != "VNINDEX" and c < 1_000:
-                o, h, lo, c = (x * 1_000 for x in (o, h, lo, c))
-            rows_out.append((tk, d, o, h, lo, c, v or 0))
+            o = o or c
+            h = max(x for x in (h, o, c) if x is not None)
+            lo = min(x for x in (lo, o, c) if x is not None)
+            parsed.append([tk, d, o, h, lo, c, v or 0])
+        # đơn vị nghìn đồng → đồng: quyết định cho CẢ mã (trung vị), không theo từng dòng
+        by_ticker: dict[str, list[list]] = {}
+        for row in parsed:
+            by_ticker.setdefault(row[0], []).append(row)
+        for tk, rows in by_ticker.items():
+            closes = sorted(r[5] for r in rows)
+            if tk not in {"VNINDEX", "VN30", "HNXINDEX", "UPCOMINDEX", "HNX30", "VN100"} and closes[len(closes) // 2] < 500:
+                for r in rows:
+                    r[2:6] = [x * 1_000 for x in r[2:6]]
+            rows_out.extend(tuple(r) for r in rows)
     return rows_out
 
 

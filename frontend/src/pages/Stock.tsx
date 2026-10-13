@@ -155,6 +155,7 @@ export default function Stock() {
               <PartBar label="Chất lượng" value={c.parts.quality} />
               <PartBar label="Định giá" value={c.parts.valuation} />
               <PartBar label="Rủi ro" value={c.parts.risk} />
+              {c.note && <div className="tiny" style={{ color: "var(--warn)" }}>{c.note}</div>}
               <div className="tiny subtle">Thị trường chung: {d.market.regime}</div>
             </div>
           </div>
@@ -271,7 +272,21 @@ export default function Stock() {
         </div>
       )}
 
-      {tab === "fund" && (
+      {(tab === "fund" || tab === "val") && f.available === false && (
+        <Card title="Chưa có báo cáo tài chính thật" icon={<FileSpreadsheet size={16} />}>
+          <div className="col" style={{ gap: 12 }}>
+            <div className="muted">
+              Nguồn tự động chưa trả về BCTC của <b>{ticker}</b>. Để tránh phân tích trên số liệu bịa, phần chất lượng cơ bản và định giá đang
+              được bỏ qua; điểm tổng hợp hiện chỉ dựa trên kỹ thuật và rủi ro.
+            </div>
+            <div className="row wrap">
+              <Link className="btn primary" to={`/data?tab=fin&ticker=${ticker}`}><FileSpreadsheet size={15} /> Tải Excel / nhập BCTC</Link>
+              <span className="small subtle">Có thể dùng file xuất từ Vietstock, CafeF, FiinPro… hoặc file mẫu của ứng dụng.</span>
+            </div>
+          </div>
+        </Card>
+      )}
+      {tab === "fund" && f.available !== false && (
         <div className="col" style={{ gap: 16 }}>
           {(f.data_warnings ?? []).map((w: string, i: number) => <Alert key={i} kind="warn">{w}</Alert>)}
           <Card title="Chỉ tiêu tài chính theo năm" icon={<Layers size={16} />} hint="Đơn vị: tỷ đồng · ROE = NI/E, ROA = NI/TA, LEV = D/E, ROA_op = (NI + Lãi vay×(1−t))/TA, Sd = Lãi vay×(1−t)/D"
@@ -343,7 +358,7 @@ export default function Stock() {
         </div>
       )}
 
-      {tab === "val" && (
+      {tab === "val" && v.available !== false && (
         <div className="grid g-main">
           <Card title="Giá trị nội tại theo từng mô hình" icon={<CircleDollarSign size={16} />}
             actions={<Badge lg tone={tone(v.upside)}>{v.verdict} · {pct(v.upside, 1, true)}</Badge>}>

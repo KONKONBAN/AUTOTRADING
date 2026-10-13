@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   Bot, BookOpen, Database, Filter, LayoutDashboard, LineChart, LogOut, Menu, Moon, PiggyBank, RefreshCw, Search, Settings as SettingsIcon, Sun, Wallet, Zap,
   type LucideIcon,
@@ -9,7 +9,7 @@ import { useStatus } from "../lib/status";
 import { useTheme } from "../lib/theme";
 import { cls, sourceLabel } from "../lib/format";
 import { useAuth } from "./AuthGate";
-import { Badge, TickerLogo, useToast } from "./ui";
+import { Badge, ErrorBoundary, TickerLogo, useToast } from "./ui";
 
 type NavItem = { to: string; label: string; icon: LucideIcon; end?: boolean; mobile?: string };
 const NAV: { section: string; items: NavItem[] }[] = [
@@ -126,6 +126,7 @@ export function Avatar({ name, size = 34 }: { name: string; size?: number }) {
 export default function Layout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const nav = useNavigate();
+  const location = useLocation();
   const { theme, toggle } = useTheme();
   const { status, refresh } = useStatus();
   const toast = useToast();
@@ -202,7 +203,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           </button>
           <button className="show-mobile avatar-btn" title="Tài khoản" onClick={() => nav("/settings")}><Avatar name={user.display_name} size={32} /></button>
         </header>
-        <main className="content">{children}</main>
+        <main className="content"><ErrorBoundary key={location.pathname}>{children}</ErrorBoundary></main>
       </div>
       <nav className="mobile-nav">
         {ALL_ITEMS.filter((n) => n.mobile).map((n) => (

@@ -307,12 +307,14 @@ def get_financials(ticker: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             log.info("TCBS BCTC lỗi cho %s: %s", ticker, exc)
     if result is None:
-        result = {"source": "demo", "rows": _demo(ticker)}
+        # Chế độ dữ liệu thật: KHÔNG bịa BCTC - để trống để giao diện yêu cầu nhập tay / tải Excel
+        result = ({"source": "demo", "rows": _demo(ticker)} if settings.data_mode == "demo"
+                  else {"source": "none", "rows": []})
     manual = list_manual(ticker)
     result["manual_years"] = [m["year"] for m in manual]
     if manual:
         # Không bao giờ trộn số liệu thật của người dùng với số liệu DEMO bịa ra
-        auto_rows = [] if result["source"] == "demo" else result["rows"]
+        auto_rows = [] if result["source"] in {"demo", "none"} else result["rows"]
         by_year = {r["year"]: r for r in auto_rows}
         shares_hint = next((r.get("shares") for r in reversed(auto_rows) if r.get("shares")), None)
         for m in manual:
@@ -323,5 +325,5 @@ def get_financials(ticker: str) -> dict:
         result["rows"] = [by_year[y] for y in sorted(by_year)][-8:]
         all_manual = all(r["year"] in result["manual_years"] for r in result["rows"])
         result["source"] = "manual" if all_manual else f"manual+{result['source']}"
-    db.cache_set(key, result, 6 * 3600 if result["source"] != "demo" else 3600)
+    db.cache_set(key, result, 600 if result["source"] == "none" else 3600 if result["source"] == "demo" else 6 * 3600)
     return result

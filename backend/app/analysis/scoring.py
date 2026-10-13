@@ -29,7 +29,9 @@ def composite(tech: dict, quality: dict, val: dict, risk: dict, market: dict | N
         "valuation": val["score"],
         "risk": risk_score(risk),
     }
-    score = sum(parts[k] * w for k, w in WEIGHTS.items())
+    # Thành phần thiếu dữ liệu (chưa có BCTC → chất lượng/định giá = None) bị loại, trọng số chia lại
+    avail = {k: w for k, w in WEIGHTS.items() if parts[k] is not None}
+    score = sum(parts[k] * w for k, w in avail.items()) / sum(avail.values())
     # Điều chỉnh theo thị trường chung (rủi ro hệ thống)
     if market:
         exposure = market["recommended_exposure"]
@@ -45,8 +47,12 @@ def composite(tech: dict, quality: dict, val: dict, risk: dict, market: dict | N
         rec, code = "GIẢM TỶ TRỌNG", "reduce"
     else:
         rec, code = "BÁN / TRÁNH", "sell"
-    return {"score": score, "parts": {k: round(v, 1) for k, v in parts.items()},
-            "weights": WEIGHTS, "recommendation": rec, "code": code}
+    missing = [k for k in WEIGHTS if parts[k] is None]
+    return {"score": score, "parts": {k: (round(v, 1) if v is not None else None) for k, v in parts.items()},
+            "weights": {k: round(w / sum(avail.values()), 3) for k, w in avail.items()}, "recommendation": rec,
+            "code": code, "missing_parts": missing,
+            "note": ("Chưa có BCTC thật: điểm chỉ dựa trên kỹ thuật và rủi ro - thận trọng, hãy bổ sung BCTC."
+                     if missing else None)}
 
 
 def trade_plan(price: float, atr: float, tech: dict, val: dict, equity: float = 100_000_000,

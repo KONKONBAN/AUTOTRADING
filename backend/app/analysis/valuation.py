@@ -92,6 +92,14 @@ def graham_number(eps: float, bvps: float) -> float | None:
 
 def valuation(fin_rows: list[dict], ratios: list[dict], price: float, beta: float, sector: str,
               sector_pe: float | None = None, sector_pb: float | None = None) -> dict:
+    if not fin_rows:
+        re_ = capm(RISK_FREE, _clip(beta or 1.0, 0.5, 2.0), mrp=MARKET_RISK_PREMIUM)
+        return {"available": False, "price": price, "intrinsic_value": None, "upside": None, "score": None,
+                "verdict": "Chưa có BCTC để định giá", "models": [], "dcf": None,
+                "multiples": {"pe": None, "pb": None, "dividend_yield": None, "eps": None, "bvps": None, "dps": None,
+                              "sector_pe": sector_pe, "sector_pb": sector_pb},
+                "assumptions": {"risk_free": RISK_FREE, "mrp": MARKET_RISK_PREMIUM, "cost_equity": re_,
+                                "sustainable_growth": None, "beta": beta}}
     last = fin_rows[-1]
     eps, bvps, dps = last.get("eps") or 0, last.get("bvps") or 0, last.get("dps") or 0
     roe = ratios[-1]["roe"] or 0
@@ -150,7 +158,7 @@ def valuation(fin_rows: list[dict], ratios: list[dict], price: float, beta: floa
         verdict = ("RẺ - biên an toàn lớn" if upside > 0.25 else "HẤP DẪN" if upside > 0.10
                    else "HỢP LÝ" if upside > -0.10 else "ĐẮT" if upside > -0.25 else "RẤT ĐẮT")
     return {
-        "price": price, "intrinsic_value": intrinsic, "upside": upside, "score": round(score, 1),
+        "available": True, "price": price, "intrinsic_value": intrinsic, "upside": upside, "score": round(score, 1),
         "verdict": verdict, "models": models, "dcf": d,
         "multiples": {"pe": pe, "pb": pb, "dividend_yield": dps / price if price else None,
                       "eps": eps, "bvps": bvps, "dps": dps, "sector_pe": sector_pe, "sector_pb": sector_pb},

@@ -210,8 +210,28 @@ def score_quality(ratios: list[dict], f_score: dict, sector: str) -> dict:
             "ni_turned_loss": turned_loss, "negative_equity": neg_equity}
 
 
+_LATEST_KEYS = ("year", "revenue", "net_income", "total_assets", "equity", "negative_equity", "roe", "roa", "lev",
+                "roa_op", "sd", "leverage_spread", "net_margin", "gross_margin", "asset_turnover", "equity_multiplier",
+                "current_ratio", "quick_ratio", "interest_coverage", "debt_to_assets", "ocf_to_ni", "fcf", "eps",
+                "bvps", "dps", "revenue_growth", "ni_growth")
+NO_DATA_MSG = ("Chưa có báo cáo tài chính THẬT cho mã này (nguồn tự động không trả về dữ liệu). Điểm chất lượng và "
+               "định giá bị bỏ qua - hãy tải file Excel BCTC hoặc nhập tay ở trang Dữ liệu & nhập liệu.")
+
+
+def empty_analysis(fin: dict, sector: str) -> dict:
+    """Không có BCTC: trả về cấu trúc đầy đủ khóa nhưng giá trị trống (không bao giờ bịa số liệu)."""
+    return {"source": fin.get("source", "none"), "available": False, "ratios": [],
+            "latest": {k: None for k in _LATEST_KEYS}, "dupont": {}, "data_warnings": [NO_DATA_MSG],
+            "piotroski": {"score": None, "checks": []}, "mm_model": {},
+            "quality": {"score": None, "parts": [], "revenue_cagr": None, "ni_cagr": None,
+                        "ni_turned_loss": False, "negative_equity": False},
+            "is_financial": sector in FINANCIAL_SECTORS}
+
+
 def analyze(fin: dict, sector: str) -> dict:
     rows = fin["rows"]
+    if not rows:
+        return empty_analysis(fin, sector)
     ratios = ratios_by_year(rows)
     f = piotroski_f_score(rows)
     mm = mm_leverage_model(ratios)
@@ -232,6 +252,7 @@ def analyze(fin: dict, sector: str) -> dict:
         warnings.append(f"Năm {raw_last['year']}: các chỉ tiêu được ƯỚC TÍNH do thiếu số liệu: {', '.join(est)}.")
     if raw_last.get("balance_warning"):
         warnings.append(raw_last["balance_warning"])
-    return {"source": fin["source"], "ratios": ratios, "latest": last, "dupont": dupont, "data_warnings": warnings,
+    return {"source": fin["source"], "available": True, "ratios": ratios, "latest": last, "dupont": dupont,
+            "data_warnings": warnings,
             "piotroski": f, "mm_model": mm, "quality": quality,
             "is_financial": sector in FINANCIAL_SECTORS}

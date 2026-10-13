@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { Component, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, Info, UploadCloud, XCircle } from "lucide-react";
 import { cls, scoreColor, sourceLabel, tickerColor } from "../lib/format";
 
@@ -208,7 +208,15 @@ export function ScoreBar({ score, width }: { score: number; width?: number }) {
   );
 }
 
-export function PartBar({ label, value }: { label: string; value: number }) {
+export function PartBar({ label, value }: { label: string; value: number | null }) {
+  if (value == null)
+    return (
+      <div className="part" title="Chưa có dữ liệu (thiếu BCTC thật)">
+        <span className="muted">{label}</span>
+        <div className="bar" />
+        <span className="mono subtle right">—</span>
+      </div>
+    );
   return (
     <div className="part">
       <span className="muted">{label}</span>
@@ -216,6 +224,31 @@ export function PartBar({ label, value }: { label: string; value: number }) {
       <span className="mono bold right" style={{ color: scoreColor(value) }}>{Math.round(value)}</span>
     </div>
   );
+}
+
+/** Lỗi hiển thị ở một trang không làm trắng toàn bộ ứng dụng. */
+export class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error) {
+    console.error("Lỗi giao diện:", error);
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="card" style={{ maxWidth: 640, margin: "40px auto" }}>
+        <Alert kind="err" title="Trang này gặp lỗi hiển thị">
+          {this.state.error.message || String(this.state.error)}
+        </Alert>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="btn primary" onClick={() => this.setState({ error: null })}>Thử lại</button>
+          <a className="btn ghost" href="/">Về trang Tổng quan</a>
+        </div>
+      </div>
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ ticker */

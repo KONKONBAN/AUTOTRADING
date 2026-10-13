@@ -371,3 +371,27 @@ def test_blank_current_liabilities_is_estimated_not_zero():
     row = fundamentals._complete_row({"year": 2024, "revenue": 100, "net_income": 10, "total_assets": 200,
                                       "equity": 100})
     assert row["current_liabilities"] == 0 and "current_liabilities" in row["defaulted_fields"]
+
+
+# ------------------------------------------------------------------ dữ liệu thật: không bịa BCTC
+def test_live_mode_without_financials_never_uses_demo(monkeypatch):
+    import dataclasses
+
+    from app import services
+    from app.data import fundamentals as fd
+    live = dataclasses.replace(fd.settings, data_mode="auto")
+    monkeypatch.setattr(fd, "settings", live)
+    monkeypatch.setattr(fd, "_live", lambda t: (_ for _ in ()).throw(RuntimeError("không có mạng")))
+    fd.delete_manual("MWG")
+    services.clear_caches()
+    fin = fd.get_financials("MWG")
+    assert fin["source"] == "none" and fin["rows"] == []
+    a = services.analyze_stock("MWG", include_chart=False)
+    assert a["fundamental"]["available"] is False and a["valuation"]["available"] is False
+    assert a["valuation"]["intrinsic_value"] is None
+    comp = a["composite"]
+    assert comp["parts"]["quality"] is None and comp["parts"]["valuation"] is None
+    assert set(comp["missing_parts"]) == {"quality", "valuation"} and comp["note"]
+    assert abs(sum(comp["weights"].values()) - 1) < 1e-6
+    assert any("Chưa có báo cáo tài chính" in c for c in a["summary"]["cons"])
+    services.clear_caches()
